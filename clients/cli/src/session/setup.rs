@@ -40,35 +40,35 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
     let total_system_memory = sysinfo.total_memory();
     let total_cores = crate::system::num_cores();
 
-    // Calculate memory per subprocess based on actual usage patterns
+    // Calculate memory per subprocess based on actual usage patterns with larger safety margins
     // Main process: ~50MB base + subprocess overhead
-    // Each subprocess: ~10MB actual usage (measured) + safety margin
+    // Each subprocess: actual usage can vary significantly by task size and complexity
     let base_process_memory = 50 * 1024 * 1024; // 50MB base for main process
     let memory_per_subprocess = if aggressive {
-        25 * 1024 * 1024 // 25MB per subprocess in aggressive mode (includes safety margin)
+        60 * 1024 * 1024 // 60MB per subprocess in aggressive mode (higher performance)
     } else {
-        30 * 1024 * 1024 // 30MB per subprocess in standard mode (conservative)
+        40 * 1024 * 1024 // 40MB per subprocess in standard mode (balanced)
     };
 
     // Calculate maximum subprocesses based on aggressive parallelization strategy
-    // In aggressive mode, we spawn 2-8x CPU cores worth of subprocesses
+    // Adjusted multipliers for higher memory per subprocess (40-60MB vs 25-30MB)
     let multiplier = if aggressive {
         if total_system_memory >= 16 * 1024 * 1024 * 1024 { // 16GB+
-            8 // High-end systems: 8x cores
+            6 // High-end systems: 6x cores (reduced from 8 for memory)
         } else if total_system_memory >= 8 * 1024 * 1024 * 1024 { // 8GB+
-            6 // Mid-high systems: 6x cores
+            4 // Mid-high systems: 4x cores (reduced from 6 for memory)
         } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
-            4 // Mid-range systems: 4x cores
+            3 // Mid-range systems: 3x cores (reduced from 4 for memory)
         } else {
-            2 // Low-end systems: 2x cores
+            2 // Low-end systems: 2x cores (unchanged)
         }
     } else {
         if total_system_memory >= 8 * 1024 * 1024 * 1024 { // 8GB+
-            4 // Standard mode: more conservative
+            3 // Standard mode: conservative (reduced from 4 for memory)
         } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
-            3 // Standard mode: moderate
+            2 // Standard mode: moderate (reduced from 3 for memory)
         } else {
-            2 // Standard mode: minimal
+            2 // Standard mode: minimal (unchanged)
         }
     };
 
