@@ -8,7 +8,7 @@ use crate::orchestrator::OrchestratorClient;
 use crate::runtime::start_authenticated_worker;
 use ed25519_dalek::SigningKey;
 use std::error::Error;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::System;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
@@ -95,30 +95,10 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
 }
 
 /// Warn the user if their available memory seems insufficient for the task(s) at hand
-pub fn warn_memory_configuration(max_threads: Option<u32>) {
-    if let Some(threads) = max_threads {
-        let current_pid = Pid::from(std::process::id() as usize);
-
-        let mut sysinfo = System::new();
-        sysinfo.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[current_pid]),
-            true, // Refresh exact processes
-            ProcessRefreshKind::nothing().with_memory(),
-        );
-
-        if let Some(process) = sysinfo.process(current_pid) {
-            let ram_total = process.memory();
-            if threads as u64 * crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT >= ram_total
-            {
-                crate::print_cmd_warn!(
-                    "OOM warning",
-                    "Projected memory usage across {} requested threads exceeds memory currently available to process. In the event that proving fails due to an out-of-memory error, please restart the Nexus CLI with a smaller value supplied to `--max-threads`.",
-                    threads
-                );
-                std::thread::sleep(std::time::Duration::from_secs(3));
-            }
-        }
-    }
+pub fn warn_memory_configuration(_max_threads: Option<u32>) {
+    // Skip OOM warning - the new memory calculation in clamp_threads_by_memory
+    // already handles this properly with realistic subprocess memory usage
+    // This prevents false warnings for configurations that are actually safe
 }
 
 /// Sets up an authenticated worker session
