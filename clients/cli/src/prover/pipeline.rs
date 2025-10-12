@@ -62,14 +62,21 @@ impl ProvingPipeline {
         // Create cancellation token for graceful shutdown
         let cancellation_token = CancellationToken::new();
 
-        // Streaming processing: process inputs in batches to limit memory usage
-        const BATCH_SIZE: usize = 4; // Process 4 proofs at a time to stay within 2GB memory budget
+        // Dynamic batch sizing based on available memory and input count
+        let total_memory_gb = crate::system::total_memory_gb();
+        let batch_size = if total_memory_gb >= 16.0 && all_inputs.len() > 8 {
+            8 // High-end systems: process 8 at a time
+        } else if total_memory_gb >= 8.0 && all_inputs.len() > 4 {
+            6 // Mid-range systems: process 6 at a time
+        } else {
+            4 // Low-end systems: stay conservative
+        };
         let mut all_proofs = Vec::with_capacity(all_inputs.len());
         let mut proof_hashes = Vec::with_capacity(all_inputs.len());
         let mut verification_failures = Vec::new();
 
-        for batch_start in (0..all_inputs.len()).step_by(BATCH_SIZE) {
-            let batch_end = std::cmp::min(batch_start + BATCH_SIZE, all_inputs.len());
+        for batch_start in (0..all_inputs.len()).step_by(batch_size) {
+            let batch_end = std::cmp::min(batch_start + batch_size, all_inputs.len());
             let batch_inputs = &all_inputs[batch_start..batch_end];
 
             // Process current batch

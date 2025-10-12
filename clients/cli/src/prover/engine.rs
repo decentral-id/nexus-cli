@@ -97,16 +97,20 @@ impl ProvingEngine {
         // Deserialize proof from subprocess stdout
         let proof: Proof = from_bytes(&output.stdout)?;
 
-        // Verify proof in main process
-        let verify_prover = Self::create_fib_prover()?;
-        verifier::ProofVerifier::verify_proof(&proof, inputs, &verify_prover)?;
+        // Verify proof in main process using cached verifier instance
+        static CACHED_VERIFIER: std::sync::OnceLock<Stwo<Local>> = std::sync::OnceLock::new();
+        let verify_prover = CACHED_VERIFIER.get_or_init(|| {
+            Self::create_fib_prover().expect("Failed to create cached verifier")
+        });
+        verifier::ProofVerifier::verify_proof(&proof, inputs, verify_prover)?;
 
         Ok(proof)
     }
 
     /// Apply safe performance optimizations to subprocess
     fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
-        // Conservative memory optimization - avoid thread count variables that may conflict with SDK
+        // Conservative memory optimizations - avoid thread count variables that may conflict with SDK
         cmd.env("MALLOC_ARENA_MAX", "4");
+        cmd.env("MALLOC_CONF", "dirty_decay_ms:1000,muzzy_decay_ms:1000");
     }
 }
