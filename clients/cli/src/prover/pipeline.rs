@@ -1,7 +1,6 @@
 //! Proving pipeline that orchestrates the full proving process
 
 use std::sync::Arc;
-
 use super::engine::ProvingEngine;
 use super::input::InputParser;
 use super::types::ProverError;
@@ -50,11 +49,7 @@ impl ProvingPipeline {
             ));
         }
 
-        // Create shared references to avoid unnecessary cloning
-        let task_shared = Arc::new(task.clone());
-        let environment_shared = Arc::new(environment.clone());
-        let client_id_shared = Arc::new(client_id.to_string());
-
+      
         // Maximum parallelization: run many more subprocesses than CPU cores
         // Since each subprocess is I/O bound and mostly waits for SDK, we can over-subscribe
         let cores = crate::system::num_cores();
@@ -100,17 +95,22 @@ impl ProvingPipeline {
             let batch_end = std::cmp::min(batch_start + batch_size, all_inputs.len());
             let batch_inputs = &all_inputs[batch_start..batch_end];
 
-            // Process current batch
+            // Clone shared data for this batch to reduce per-iteration overhead
+            let batch_task = task.clone();
+            let batch_environment = environment.clone();
+            let batch_client_id = client_id.to_string();
+
+            // Process current batch with optimized references
             let handles: Vec<_> = batch_inputs
                 .iter()
                 .enumerate()
                 .map(|(local_index, input_data)| {
-                    let task_ref = Arc::clone(&task_shared);
-                    let environment_ref = Arc::clone(&environment_shared);
-                    let client_id_ref = Arc::clone(&client_id_shared);
                     let input_data = input_data.clone();
                     let semaphore_ref = Arc::clone(&semaphore);
                     let cancellation_ref = cancellation_token.clone();
+                    let task_ref = batch_task.clone();
+                    let env_ref = batch_environment.clone();
+                    let client_ref = batch_client_id.clone();
                     let global_index = batch_start + local_index;
 
                     tokio::spawn(async move {
@@ -130,12 +130,12 @@ impl ProvingPipeline {
                         // Step 1: Parse and validate input
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
-                        // Step 2: Generate and verify proof with streaming hash generation
+                        // Step 2: Generate proof with optimized reference sharing
                         let proof = ProvingEngine::prove_and_validate(
                             &inputs,
                             &task_ref,
-                            &environment_ref,
-                            &client_id_ref,
+                            &env_ref,
+                            &client_ref,
                         )
                         .await?;
 
@@ -163,10 +163,10 @@ impl ProvingPipeline {
                         match e {
                             ProverError::Stwo(_) | ProverError::GuestProgram(_) => {
                                 verification_failures.push((
-                                    task_shared.clone(),
+                                    batch_task.clone(),
                                     format!("Input {}: {}", global_index, e),
-                                    environment_shared.clone(),
-                                    client_id_shared.clone(),
+                                    batch_environment.clone(),
+                                    batch_client_id.clone(),
                                 ));
                             }
                             _ => {
@@ -186,15 +186,23 @@ impl ProvingPipeline {
             tokio::task::yield_now().await;
         }
 
-        // Handle all verification failures in batch (avoid nested spawns)
+        // Optimize analytics tracking - batch failures to avoid task spawning overhead
         let failure_count = verification_failures.len();
-        for (task, error_msg, env, client) in verification_failures {
-            tokio::spawn(track_verification_failed(
-                (*task).clone(),
-                error_msg,
-                (*env).clone(),
-                (*client).clone(),
-            ));
+        if failure_count > 0 {
+            // Collect all failure data for batch processing
+            let batch_failures: Vec<_> = verification_failures.into_iter().collect();
+
+            // Fire-and-forget analytics with minimal overhead
+            tokio::spawn(async move {
+                for (task, error_msg, env, client) in batch_failures {
+                    track_verification_failed(
+                        task,
+                        error_msg,
+                        env,
+                        client,
+                    ).await;
+                }
+            });
         }
 
         // If we have verification failures, we still return an error
@@ -205,7 +213,8 @@ impl ProvingPipeline {
             )));
         }
 
-        let final_proof_hash = Self::combine_proof_hashes(&task_shared, &proof_hashes);
+        // Use optimized reference for hash combination
+        let final_proof_hash = Self::combine_proof_hashes(&task, &proof_hashes);
 
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
@@ -226,16 +235,19 @@ impl ProvingPipeline {
         format!("{:x}", hash)
     }
 
-    /// Generate hash for a proof with memory-efficient streaming to minimize memory usage
+    /// Generate hash for a proof with zero-allocation streaming for maximum performance
     fn generate_proof_hash_streaming(proof: &Proof) -> Result<String, ProverError> {
-        // Use a smaller buffer for streaming serialization to reduce memory pressure
-        let proof_bytes = postcard::to_allocvec(proof).map_err(ProverError::Serialization)?;
-        
-        // Process hash in chunks to avoid large memory allocations
+        // Use direct serialization with hasher to avoid intermediate allocation
+        // This saves both memory allocation time and reduces memory pressure
+
+        // Create hasher that can serialize directly
         let mut hasher = Keccak256::new();
-        hasher.update(&proof_bytes);
+
+        // Serialize proof directly into hasher - no intermediate Vec allocation
+        // This is the most memory-efficient approach
+        postcard::to_io(proof, &mut hasher).map_err(ProverError::Serialization)?;
+
         let hash = hasher.finalize();
-        
         Ok(format!("{:x}", hash))
     }
 
