@@ -55,9 +55,21 @@ impl ProvingPipeline {
         let environment_shared = Arc::new(environment.clone());
         let client_id_shared = Arc::new(client_id.to_string());
 
-        // Create a semaphore with optimized concurrency for memory efficiency
-        // Reduced concurrency to prevent memory pressure with 2GB per thread limit
-        let optimized_workers = std::cmp::min(num_workers, crate::system::num_cores());
+        // Smart concurrency scaling based on system capabilities
+        let total_memory_gb = crate::system::total_memory_gb();
+        let cores = crate::system::num_cores();
+        let optimal_concurrency = if total_memory_gb >= 16.0 && cores >= 8 {
+            // High-end systems: aggressive concurrency
+            (cores * 6).max(24).min(all_inputs.len())
+        } else if total_memory_gb >= 8.0 && cores >= 4 {
+            // Mid-range systems: balanced concurrency
+            (cores * 4).max(12).min(all_inputs.len())
+        } else {
+            // Low-end systems: optimized for memory-constrained systems
+            (cores * 3).max(4).min(all_inputs.len())
+        };
+
+        let optimized_workers = std::cmp::min(num_workers, optimal_concurrency);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(optimized_workers));
 
         // Create cancellation token for graceful shutdown
