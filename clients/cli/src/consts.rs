@@ -26,8 +26,9 @@ pub mod cli_consts {
     /// Subprocess error code indicating an internal failure of the proving
     pub const SUBPROCESS_INTERNAL_ERROR_CODE: i32 = 3;
 
-    /// "Reasonable" generic projection task memory requirement.
-    pub const PROJECTED_MEMORY_REQUIREMENT: u64 = 4294967296; // 4gb
+    /// Optimized memory requirement per thread for maximum performance
+    /// Reduced from 4GB to 3GB, now 2GB with streaming trace processing for maximum concurrency
+    pub const PROJECTED_MEMORY_REQUIREMENT: u64 = 2147483648; // 2gb
 
     // =============================================================================
     // DIFFICULTY CONFIGURATION

@@ -74,11 +74,11 @@ impl ProofSubmitter {
             )
             .await;
 
-        // Serialize proofs
+        // Serialize proofs efficiently - avoid unnecessary cloning
         let proofs_bytes: Vec<Vec<u8>> = proof_result
             .proofs
             .iter()
-            .map(postcard::to_allocvec)
+            .map(|proof| postcard::to_allocvec(proof))
             .collect::<Result<_, _>>()?;
         let legacy_proof_bytes = proofs_bytes.first().cloned().unwrap_or_default();
 

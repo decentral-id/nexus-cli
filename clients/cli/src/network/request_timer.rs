@@ -4,6 +4,7 @@
 //! unified approach that prioritizes server-provided retry delays over local timing strategies.
 
 use std::time::{Duration, Instant};
+use std::collections::VecDeque;
 
 /// Configuration for request timing behavior
 #[derive(Debug, Clone)]
@@ -61,7 +62,7 @@ impl RequestTimerConfig {
 pub struct RequestTimer {
     config: RequestTimerConfig,
     last_request_time: Option<Instant>,
-    request_times: Vec<Instant>,
+    request_times: VecDeque<Instant>,
     server_retry_until: Option<Instant>,
 }
 
@@ -70,7 +71,7 @@ impl RequestTimer {
         Self {
             config,
             last_request_time: None,
-            request_times: Vec::new(),
+            request_times: VecDeque::new(),
             server_retry_until: None,
         }
     }
@@ -100,9 +101,14 @@ impl RequestTimer {
         if let (Some(max_requests), Some(time_window)) =
             (self.config.max_requests, self.config.time_window)
         {
-            // Remove old requests outside the time window
-            self.request_times
-                .retain(|&time| now.duration_since(time) <= time_window);
+            // Remove old requests outside the time window (more efficient with VecDeque)
+            while let Some(&front_time) = self.request_times.front() {
+                if now.duration_since(front_time) > time_window {
+                    self.request_times.pop_front();
+                } else {
+                    break;
+                }
+            }
 
             if self.request_times.len() >= max_requests as usize {
                 return false;
@@ -117,9 +123,13 @@ impl RequestTimer {
         let now = Instant::now();
         self.last_request_time = Some(now);
         if self.config.max_requests.is_some() {
-            self.request_times.push(now);
+            self.request_times.push_back(now);
         }
+    }
 
+    /// Set retry delay without recording a request (for internal use)
+    fn set_retry_delay(&mut self) {
+        let now = Instant::now();
         // Don't override existing server retry delay - respect whatever time is left
         // Only set default retry delay if there's no existing wait period
         if self.server_retry_until.is_none() || self.server_retry_until.unwrap() <= now {
@@ -134,7 +144,7 @@ impl RequestTimer {
         self.last_request_time = Some(now);
 
         if self.config.max_requests.is_some() {
-            self.request_times.push(now);
+            self.request_times.push_back(now);
         }
 
         // Server retry delay overrides everything else
@@ -180,7 +190,7 @@ impl RequestTimer {
 
             if self.request_times.len() >= max_requests as usize {
                 // Find the oldest request in the window
-                if let Some(&oldest) = self.request_times.first() {
+                if let Some(&oldest) = self.request_times.front() {
                     let wait_until_oldest_expires = time_window - now.duration_since(oldest);
                     min_wait = std::cmp::max(min_wait, wait_until_oldest_expires);
                 }

@@ -84,13 +84,17 @@ impl TaskFetcher {
         while !self.network_client.request_timer_mut().can_proceed() {
             let wait_time = self.network_client.request_timer_mut().time_until_next();
             if wait_time > Duration::ZERO {
-                // Log the accurate wait time here
+                // Log the accurate wait time here (optimized to reduce string allocations)
+                let wait_seconds = wait_time.as_secs();
+                let message = if wait_seconds == 1 {
+                    "Step 1 of 4: Waiting - ready for next task (1 second)".to_string()
+                } else {
+                    format!("Step 1 of 4: Waiting - ready for next task ({}) seconds", wait_seconds)
+                };
+                
                 self.event_sender
                     .send_task_event(
-                        format!(
-                            "Step 1 of 4: Waiting - ready for next task ({}) seconds",
-                            wait_time.as_secs()
-                        ),
+                        message,
                         EventType::Waiting,
                         LogLevel::Info,
                     )

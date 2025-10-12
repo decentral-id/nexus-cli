@@ -115,7 +115,7 @@ impl NetworkClient {
     pub async fn submit_proof(
         &mut self,
         orchestrator: &dyn Orchestrator,
-        submission: ProofSubmission,
+        mut submission: ProofSubmission,
         signing_key: SigningKey,
         num_provers: usize,
     ) -> Result<u32, (OrchestratorError, u32)> {
@@ -127,8 +127,8 @@ impl NetworkClient {
                 .submit_proof(
                     &submission.task_id,
                     &submission.proof_hash,
-                    submission.proof_bytes.clone(),
-                    submission.proofs_bytes.clone(),
+                    std::mem::take(&mut submission.proof_bytes),
+                    std::mem::take(&mut submission.proofs_bytes),
                     signing_key.clone(),
                     num_provers,
                     submission.task_type,

@@ -127,6 +127,10 @@ enum Command {
         /// Override max difficulty to request. Auto-promotion occurs when tasks complete in < 7 min
         #[arg(long = "max-difficulty", value_name = "DIFFICULTY")]
         max_difficulty: Option<String>,
+
+        /// Aggressive resource optimization mode. Uses maximum available CPU cores and RAM for fastest proving.
+        #[arg(long = "aggressive", action = ArgAction::SetTrue)]
+        aggressive: bool,
     },
     /// Register a new user
     RegisterUser {
@@ -177,6 +181,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             with_background,
             max_tasks,
             max_difficulty,
+            aggressive,
         } => {
             // If a custom orchestrator URL is provided, create a custom environment
             let final_environment = if let Some(url) = orchestrator_url {
@@ -196,6 +201,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 with_background,
                 max_tasks,
                 max_difficulty,
+                aggressive,
             )
             .await
         }
@@ -241,6 +247,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// * `check_mem` - Whether to check risky memory usage.
 /// * `with_background` - Whether to use the alternate TUI background color.
 /// * `max_tasks` - Optional maximum number of tasks to prove.
+/// * `aggressive` - Whether to use aggressive resource optimization.
 #[allow(clippy::too_many_arguments)]
 async fn start(
     node_id: Option<u64>,
@@ -252,6 +259,7 @@ async fn start(
     with_background: bool,
     max_tasks: Option<u32>,
     max_difficulty: Option<String>,
+    aggressive: bool,
 ) -> Result<(), Box<dyn Error>> {
     // 1. Version checking (will internally perform country detection without race)
     validate_version_requirements().await?;
@@ -287,6 +295,7 @@ async fn start(
         max_threads,
         max_tasks,
         max_difficulty_parsed,
+        aggressive,
     )
     .await?;
 

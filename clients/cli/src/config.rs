@@ -61,6 +61,14 @@ impl Config {
         Ok(config)
     }
 
+    /// Loads configuration from a JSON file asynchronously.
+    pub async fn load_from_file_async(path: &Path) -> Result<Self, std::io::Error> {
+        let buf = tokio::fs::read(path).await?;
+        let config: Config = serde_json::from_slice(&buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(config)
+    }
+
     /// Saves the configuration to a JSON file at the given path.
     pub fn save(&self, path: &Path) -> Result<(), std::io::Error> {
         if let Some(parent) = path.parent() {
@@ -124,8 +132,8 @@ impl Config {
             return Err("Configuration file not found. Please register first.".into());
         }
 
-        // Load the config file
-        let mut config = Config::load_from_file(config_path)?;
+        // Load the config file asynchronously for better performance
+        let mut config = Config::load_from_file_async(config_path).await?;
 
         // Resolve node_id from config file
         let resolved_node_id = match config.resolve_node_id_from_config() {

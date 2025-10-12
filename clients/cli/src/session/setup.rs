@@ -33,16 +33,16 @@ pub struct SessionData {
 
 /// Clamp thread count based on available system memory
 /// Returns the maximum number of threads that can be safely used given system memory
-fn clamp_threads_by_memory(requested_threads: usize) -> usize {
+fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize {
     let mut sysinfo = System::new();
     sysinfo.refresh_memory();
 
     let total_system_memory = sysinfo.total_memory();
     let memory_per_thread = crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT;
 
-    // Calculate max threads based on total system memory
-    // Reserve 25% of system memory for OS and other processes
-    let available_memory = (total_system_memory as f64 * 0.75) as u64;
+    // Calculate max threads based on total system memory and optimization mode
+    let memory_reserve_ratio = if aggressive { 0.10 } else { 0.15 }; // Aggressive: reserve only 10%
+    let available_memory = (total_system_memory as f64 * (1.0 - memory_reserve_ratio)) as u64;
     let max_threads_by_memory = (available_memory / memory_per_thread) as usize;
 
     // Return the minimum of requested threads and memory-limited threads
@@ -90,6 +90,7 @@ pub fn warn_memory_configuration(max_threads: Option<u32>) {
 /// * `env` - Environment to connect to
 /// * `max_threads` - Optional maximum number of threads for proving
 /// * `max_difficulty` - Optional override for task difficulty
+/// * `aggressive` - Whether to use aggressive resource optimization
 ///
 /// # Returns
 /// * `Ok(SessionData)` - Successfully set up session
@@ -101,6 +102,7 @@ pub async fn setup_session(
     max_threads: Option<u32>,
     max_tasks: Option<u32>,
     max_difficulty: Option<crate::nexus_orchestrator::TaskDifficulty>,
+    aggressive: bool,
 ) -> Result<SessionData, Box<dyn Error>> {
     let node_id = config.node_id.parse::<u64>()?;
     let client_id = config.user_id;
@@ -112,20 +114,55 @@ pub async fn setup_session(
     // Create orchestrator client
     let orchestrator_client = OrchestratorClient::new(env.clone());
 
-    // Clamp the number of workers to [1, 75% of num_cores]. Leave room for other processes.
     let total_cores = crate::system::num_cores();
-    let max_workers = ((total_cores as f64 * 0.75).ceil() as usize).max(1);
-    let mut num_workers: usize = max_threads.unwrap_or(1).clamp(1, max_workers as u32) as usize;
+    
+    // Calculate optimal worker count based on optimization mode
+    let (max_workers, default_workers) = if aggressive {
+        // Aggressive mode: Use 95% of cores for maximum performance
+        let max = ((total_cores as f64 * 0.95).ceil() as usize).max(1);
+        (max, max)
+    } else {
+        // Standard mode: Use up to 90% of cores for proving, leaving room for system processes
+        let max = ((total_cores as f64 * 0.9).ceil() as usize).max(1);
+        (max, max)
+    };
+    
+    let mut num_workers: usize = max_threads.unwrap_or(default_workers as u32).clamp(1, max_workers as u32) as usize;
 
-    // Check memory and clamp threads if max-threads was explicitly set OR check-memory flag is set
-    if max_threads.is_some() || check_mem {
-        let memory_clamped_workers = clamp_threads_by_memory(num_workers);
-        if memory_clamped_workers < num_workers {
-            crate::print_cmd_warn!(
-                "Memory limit",
-                "Reduced thread count from {} to {} due to insufficient memory. Each thread requires ~4GB RAM.",
+    // Check memory and clamp threads if max-threads was explicitly set OR check-memory flag is set OR aggressive mode
+    if max_threads.is_some() || check_mem || aggressive {
+        // Get system memory info for debugging
+        let mut sysinfo = System::new();
+        sysinfo.refresh_memory();
+        let total_system_memory = sysinfo.total_memory();
+        
+        let memory_clamped_workers = clamp_threads_by_memory(num_workers, aggressive);
+        
+        // Debug output for memory calculation
+        if aggressive || check_mem {
+            let total_gb = total_system_memory as f64 / 1024.0 / 1024.0 / 1024.0;
+            let available_gb = total_gb * if aggressive { 0.90 } else { 0.85 };
+            crate::print_cmd_info!(
+                "Memory calculation",
+                "System: {:.1}GB total, {:.1}GB available for proving, requested: {} threads, calculated max: {} threads",
+                total_gb,
+                available_gb,
                 num_workers,
                 memory_clamped_workers
+            );
+        }
+        if memory_clamped_workers < num_workers {
+            let mode_text = if aggressive { "aggressive" } else { "standard" };
+            let total_gb = total_system_memory as f64 / 1024.0 / 1024.0 / 1024.0;
+            let available_gb = total_gb * if aggressive { 0.90 } else { 0.85 };
+            crate::print_cmd_warn!(
+                "Memory limit",
+                "Reduced thread count from {} to {} due to insufficient memory ({} mode). System: {:.1}GB total, {:.1}GB available, each thread needs ~2GB.",
+                num_workers,
+                memory_clamped_workers,
+                mode_text,
+                total_gb,
+                available_gb
             );
             num_workers = memory_clamped_workers;
         }

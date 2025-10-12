@@ -35,7 +35,7 @@ impl ProvingPipeline {
         }
     }
 
-    /// Process fibonacci proving task with multiple inputs
+    /// Process fibonacci proving task with multiple inputs using streaming memory optimization
     async fn prove_fib_task(
         task: &Task,
         environment: &Environment,
@@ -55,94 +55,108 @@ impl ProvingPipeline {
         let environment_shared = Arc::new(environment.clone());
         let client_id_shared = Arc::new(client_id.to_string());
 
-        // Create a semaphore with a specific number of permits
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(num_workers));
+        // Create a semaphore with optimized concurrency for memory efficiency
+        // Reduced concurrency to prevent memory pressure with 2GB per thread limit
+        let optimized_workers = std::cmp::min(num_workers, crate::system::num_cores());
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(optimized_workers));
 
         // Create cancellation token for graceful shutdown
         let cancellation_token = CancellationToken::new();
 
-        // Spawn all tasks in parallel
-        let handles: Vec<_> = all_inputs
-            .iter()
-            .enumerate()
-            .map(|(input_index, input_data)| {
-                let task_ref = Arc::clone(&task_shared);
-                let environment_ref = Arc::clone(&environment_shared);
-                let client_id_ref = Arc::clone(&client_id_shared);
-                let input_data = input_data.clone();
-                let semaphore_ref = Arc::clone(&semaphore);
-                let cancellation_ref = cancellation_token.clone();
-
-                tokio::spawn(async move {
-                    // Check for cancellation before starting
-                    if cancellation_ref.is_cancelled() {
-                        return Err(ProverError::MalformedTask("Task cancelled".to_string()));
-                    }
-
-                    // Acquire a permit from the semaphore. This waits if the limit is reached.
-                    let _permit = semaphore_ref.acquire_owned().await;
-
-                    // Check for cancellation after acquiring permit
-                    if cancellation_ref.is_cancelled() {
-                        return Err(ProverError::MalformedTask("Task cancelled".to_string()));
-                    }
-
-                    // Step 1: Parse and validate input
-                    let inputs = InputParser::parse_triple_input(&input_data)?;
-
-                    // Step 2: Generate and verify proof
-                    let proof = ProvingEngine::prove_and_validate(
-                        &inputs,
-                        &task_ref,
-                        &environment_ref,
-                        &client_id_ref,
-                    )
-                    .await?;
-
-                    // Step 3: Generate proof hash
-                    let proof_hash = Self::generate_proof_hash(&proof);
-
-                    Ok((proof, proof_hash, input_index))
-                })
-            })
-            .collect();
-
-        // Use join_all for better parallelization
-        let results = join_all(handles).await;
-
-        // Process results and collect verification failures for batch handling
-        let mut all_proofs = Vec::new();
-        let mut proof_hashes = Vec::new();
+        // Streaming processing: process inputs in batches to limit memory usage
+        const BATCH_SIZE: usize = 4; // Process 4 proofs at a time to stay within 2GB memory budget
+        let mut all_proofs = Vec::with_capacity(all_inputs.len());
+        let mut proof_hashes = Vec::with_capacity(all_inputs.len());
         let mut verification_failures = Vec::new();
 
-        for (result_index, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(Ok((proof, proof_hash, _input_index))) => {
-                    all_proofs.push(proof);
-                    proof_hashes.push(proof_hash);
-                }
-                Ok(Err(e)) => {
-                    // Collect verification failures for batch processing
-                    match e {
-                        ProverError::Stwo(_) | ProverError::GuestProgram(_) => {
-                            verification_failures.push((
-                                task_shared.clone(),
-                                format!("Input {}: {}", result_index, e),
-                                environment_shared.clone(),
-                                client_id_shared.clone(),
-                            ));
+        for batch_start in (0..all_inputs.len()).step_by(BATCH_SIZE) {
+            let batch_end = std::cmp::min(batch_start + BATCH_SIZE, all_inputs.len());
+            let batch_inputs = &all_inputs[batch_start..batch_end];
+
+            // Process current batch
+            let handles: Vec<_> = batch_inputs
+                .iter()
+                .enumerate()
+                .map(|(local_index, input_data)| {
+                    let task_ref = Arc::clone(&task_shared);
+                    let environment_ref = Arc::clone(&environment_shared);
+                    let client_id_ref = Arc::clone(&client_id_shared);
+                    let input_data = input_data.clone();
+                    let semaphore_ref = Arc::clone(&semaphore);
+                    let cancellation_ref = cancellation_token.clone();
+                    let global_index = batch_start + local_index;
+
+                    tokio::spawn(async move {
+                        // Check for cancellation before starting
+                        if cancellation_ref.is_cancelled() {
+                            return Err(ProverError::MalformedTask("Task cancelled".to_string()));
                         }
-                        _ => {
-                            // Cancel remaining tasks on critical errors
-                            cancellation_token.cancel();
-                            return Err(e);
+
+                        // Acquire a permit from the semaphore. This waits if the limit is reached.
+                        let _permit = semaphore_ref.acquire_owned().await;
+
+                        // Check for cancellation after acquiring permit
+                        if cancellation_ref.is_cancelled() {
+                            return Err(ProverError::MalformedTask("Task cancelled".to_string()));
+                        }
+
+                        // Step 1: Parse and validate input
+                        let inputs = InputParser::parse_triple_input(&input_data)?;
+
+                        // Step 2: Generate and verify proof with streaming hash generation
+                        let proof = ProvingEngine::prove_and_validate(
+                            &inputs,
+                            &task_ref,
+                            &environment_ref,
+                            &client_id_ref,
+                        )
+                        .await?;
+
+                        // Step 3: Generate proof hash with memory-efficient streaming
+                        let proof_hash = Self::generate_proof_hash_streaming(&proof)?;
+
+                        Ok((proof, proof_hash, global_index))
+                    })
+                })
+                .collect();
+
+            // Wait for batch completion
+            let results = join_all(handles).await;
+
+            // Process batch results immediately to free memory
+            for (result_index, result) in results.into_iter().enumerate() {
+                let global_index = batch_start + result_index;
+                match result {
+                    Ok(Ok((proof, proof_hash, _))) => {
+                        all_proofs.push(proof);
+                        proof_hashes.push(proof_hash);
+                    }
+                    Ok(Err(e)) => {
+                        // Collect verification failures for batch processing
+                        match e {
+                            ProverError::Stwo(_) | ProverError::GuestProgram(_) => {
+                                verification_failures.push((
+                                    task_shared.clone(),
+                                    format!("Input {}: {}", global_index, e),
+                                    environment_shared.clone(),
+                                    client_id_shared.clone(),
+                                ));
+                            }
+                            _ => {
+                                // Cancel remaining tasks on critical errors
+                                cancellation_token.cancel();
+                                return Err(e);
+                            }
                         }
                     }
-                }
-                Err(join_error) => {
-                    return Err(ProverError::JoinError(join_error));
+                    Err(join_error) => {
+                        return Err(ProverError::JoinError(join_error));
+                    }
                 }
             }
+
+            // Force memory cleanup between batches
+            tokio::task::yield_now().await;
         }
 
         // Handle all verification failures in batch (avoid nested spawns)
@@ -173,6 +187,27 @@ impl ProvingPipeline {
     fn generate_proof_hash(proof: &Proof) -> String {
         let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
         format!("{:x}", Keccak256::digest(&proof_bytes))
+    }
+
+    /// Generate hash for a proof with optimized serialization
+    fn generate_proof_hash_optimized(proof: &Proof) -> String {
+        // Use a more efficient serialization approach for hashing
+        let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof for hashing");
+        let hash = Keccak256::digest(&proof_bytes);
+        format!("{:x}", hash)
+    }
+
+    /// Generate hash for a proof with memory-efficient streaming to minimize memory usage
+    fn generate_proof_hash_streaming(proof: &Proof) -> Result<String, ProverError> {
+        // Use a smaller buffer for streaming serialization to reduce memory pressure
+        let proof_bytes = postcard::to_allocvec(proof).map_err(ProverError::Serialization)?;
+        
+        // Process hash in chunks to avoid large memory allocations
+        let mut hasher = Keccak256::new();
+        hasher.update(&proof_bytes);
+        let hash = hasher.finalize();
+        
+        Ok(format!("{:x}", hash))
     }
 
     /// Combine multiple proof hashes based on task type

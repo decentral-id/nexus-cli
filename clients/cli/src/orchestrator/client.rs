@@ -15,7 +15,8 @@ use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use prost::Message;
 use reqwest::{Client, ClientBuilder, Response};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 /// Proof payload returned by `select_proof_payload`.
 ///
@@ -58,6 +59,17 @@ const USER_AGENT: &str = concat!("nexus-cli/", env!("CARGO_PKG_VERSION"));
 // requests to the nearest Nexus network servers for better performance.
 // No precise location, IP addresses, or personal data is collected or stored.
 pub(crate) static COUNTRY_CODE: OnceLock<String> = OnceLock::new();
+
+/// Cached system metrics to avoid repeated expensive system calls
+#[derive(Clone)]
+struct SystemMetrics {
+    program_memory: i32,
+    total_memory: i32,
+    flops: f64,
+    cached_at: Instant,
+}
+
+static SYSTEM_METRICS: OnceLock<RwLock<SystemMetrics>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct OrchestratorClient {
@@ -236,6 +248,31 @@ impl OrchestratorClient {
         let country = self.detect_country().await;
         let _ = COUNTRY_CODE.set(country.clone());
         country
+    }
+
+    /// Get cached system metrics, refreshing if they're older than 30 seconds
+    async fn get_system_metrics(&self, num_provers: usize) -> (i32, i32, f64) {
+        let metrics_lock = SYSTEM_METRICS.get_or_init(|| RwLock::new(SystemMetrics {
+            program_memory: 0,
+            total_memory: 0,
+            flops: 0.0,
+            cached_at: Instant::now(),
+        }));
+
+        let mut metrics = metrics_lock.write().await;
+        
+        // Refresh metrics if they're older than 30 seconds
+        if metrics.cached_at.elapsed() > Duration::from_secs(30) {
+            let (program_memory, total_memory) = get_memory_info();
+            let flops = estimate_peak_gflops(num_provers);
+            
+            metrics.program_memory = program_memory;
+            metrics.total_memory = total_memory;
+            metrics.flops = flops;
+            metrics.cached_at = Instant::now();
+        }
+
+        (metrics.program_memory, metrics.total_memory, metrics.flops)
     }
 
     async fn detect_country(&self) -> String {
@@ -425,8 +462,7 @@ impl Orchestrator for OrchestratorClient {
         task_type: crate::nexus_orchestrator::TaskType,
         individual_proof_hashes: &[String],
     ) -> Result<(), OrchestratorError> {
-        let (program_memory, total_memory) = get_memory_info();
-        let flops = estimate_peak_gflops(num_provers);
+        let (program_memory, total_memory, flops) = self.get_system_metrics(num_provers).await;
         let (signature, public_key) = self.create_signature(&signing_key, task_id, proof_hash);
 
         // Detect country for network optimization (privacy-preserving: only country code, no precise location)
