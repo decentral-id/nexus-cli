@@ -190,12 +190,14 @@ impl ProvingPipeline {
     }
 
     /// Generate hash for a proof
+    #[allow(dead_code)] // Alternative implementation kept for reference
     fn generate_proof_hash(proof: &Proof) -> String {
         let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof");
         format!("{:x}", Keccak256::digest(&proof_bytes))
     }
 
     /// Generate hash for a proof with optimized serialization
+    #[allow(dead_code)] // Alternative implementation kept for reference
     fn generate_proof_hash_optimized(proof: &Proof) -> String {
         // Use a more efficient serialization approach for hashing
         let proof_bytes = postcard::to_allocvec(proof).expect("Failed to serialize proof for hashing");

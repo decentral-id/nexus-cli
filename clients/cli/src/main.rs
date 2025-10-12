@@ -30,9 +30,10 @@ use crate::register::{register_node, register_user};
 use crate::session::{run_headless_mode, run_tui_mode, setup_session};
 use crate::version::manager::validate_version_requirements;
 use clap::{ArgAction, Parser, Subcommand};
-use postcard::to_allocvec;
+#[allow(unused_imports)] // from_bytes is used in ProveFibSubprocess command
+use postcard::{from_bytes, to_allocvec};
 use std::error::Error;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::exit;
 
 /// All available difficulty levels as (name, enum_value) pairs
@@ -148,11 +149,7 @@ enum Command {
     Logout,
     /// Hidden command for subprocess proof generation
     #[command(hide = true, name = "prove-fib-subprocess")]
-    ProveFibSubprocess {
-        /// Serialized inputs blob
-        #[arg(long)]
-        inputs: String,
-    },
+    ProveFibSubprocess,
 }
 
 #[tokio::main]
@@ -218,8 +215,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let orchestrator = Box::new(OrchestratorClient::new(environment));
             register_node(node_id, &config_path, orchestrator).await
         }
-        Command::ProveFibSubprocess { inputs } => {
-            let inputs: (u32, u32, u32) = serde_json::from_str(&inputs)?;
+        Command::ProveFibSubprocess => {
+            // Read binary inputs from stdin
+            let mut stdin_data = Vec::new();
+            std::io::stdin().read_to_end(&mut stdin_data)?;
+            let inputs: (u32, u32, u32) = postcard::from_bytes(&stdin_data)?;
             match ProvingEngine::prove_fib_subprocess(&inputs) {
                 Ok(proof) => {
                     let bytes = to_allocvec(&proof)?;

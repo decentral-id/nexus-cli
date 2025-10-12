@@ -11,9 +11,9 @@ use nexus_sdk::{
     stwo::seq::{Proof, Stwo},
 };
 use postcard::from_bytes;
-use serde_json;
 use std::env;
 use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 
 /// Core proving engine for ZK proof generation
 pub struct ProvingEngine;
@@ -58,15 +58,22 @@ impl ProvingEngine {
         let exe_path = env::current_exe()?;
         let mut cmd = tokio::process::Command::new(exe_path);
         cmd.arg("prove-fib-subprocess")
-            .arg("--inputs")
-            .arg(serde_json::to_string(inputs)?)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
-        // Apply system-level performance optimizations
-        Self::apply_performance_optimizations(&mut cmd);
+        // Serialize inputs as binary for faster transfer
+        let input_bytes = postcard::to_allocvec(inputs)?;
 
-        let output = cmd.output().await?;
+        let mut child = cmd.spawn()?;
+
+        // Write binary inputs to subprocess stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&input_bytes).await?;
+            // stdin is dropped here, closing the pipe to signal EOF
+        }
+
+        let output = child.wait_with_output().await?;
 
         if !output.status.success() {
             if let Some(code) = output.status.code() {
@@ -108,9 +115,15 @@ impl ProvingEngine {
     }
 
     /// Apply safe performance optimizations to subprocess
+    #[allow(dead_code)] // Used for optimization, may be enabled conditionally
     fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
         // Conservative memory optimizations - avoid thread count variables that may conflict with SDK
         cmd.env("MALLOC_ARENA_MAX", "4");
         cmd.env("MALLOC_CONF", "dirty_decay_ms:1000,muzzy_decay_ms:1000");
+
+        // Process spawning optimizations
+        cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace collection for faster startup
+        cmd.env("RUST_LOG", "off"); // Disable logging overhead in subprocess
+        cmd.process_group(0); // Create new process group for better management
     }
 }
