@@ -38,12 +38,56 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
     sysinfo.refresh_memory();
 
     let total_system_memory = sysinfo.total_memory();
-    let memory_per_thread = crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT;
+    let total_cores = crate::system::num_cores();
+
+    // Calculate memory per subprocess based on actual usage patterns
+    // Main process: ~50MB base + subprocess overhead
+    // Each subprocess: ~10MB actual usage (measured) + safety margin
+    let base_process_memory = 50 * 1024 * 1024; // 50MB base for main process
+    let memory_per_subprocess = if aggressive {
+        25 * 1024 * 1024 // 25MB per subprocess in aggressive mode (includes safety margin)
+    } else {
+        30 * 1024 * 1024 // 30MB per subprocess in standard mode (conservative)
+    };
+
+    // Calculate maximum subprocesses based on aggressive parallelization strategy
+    // In aggressive mode, we spawn 2-8x CPU cores worth of subprocesses
+    let multiplier = if aggressive {
+        if total_system_memory >= 16 * 1024 * 1024 * 1024 { // 16GB+
+            8 // High-end systems: 8x cores
+        } else if total_system_memory >= 8 * 1024 * 1024 * 1024 { // 8GB+
+            6 // Mid-high systems: 6x cores
+        } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
+            4 // Mid-range systems: 4x cores
+        } else {
+            2 // Low-end systems: 2x cores
+        }
+    } else {
+        if total_system_memory >= 8 * 1024 * 1024 * 1024 { // 8GB+
+            4 // Standard mode: more conservative
+        } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
+            3 // Standard mode: moderate
+        } else {
+            2 // Standard mode: minimal
+        }
+    };
+
+    let max_subprocesses = total_cores * multiplier;
+    let total_subprocess_memory = max_subprocesses * memory_per_subprocess;
+    let total_required_memory = (base_process_memory + total_subprocess_memory) as u64;
 
     // Calculate max threads based on total system memory and optimization mode
     let memory_reserve_ratio = if aggressive { 0.10 } else { 0.15 }; // Aggressive: reserve only 10%
     let available_memory = (total_system_memory as f64 * (1.0 - memory_reserve_ratio)) as u64;
-    let max_threads_by_memory = (available_memory / memory_per_thread) as usize;
+
+    // Allow more threads on systems with sufficient memory for parallel subprocess strategy
+    let max_threads_by_memory = if total_required_memory <= available_memory {
+        requested_threads // Allow requested threads if memory permits subprocess strategy
+    } else {
+        // Fall back to conservative 2GB per thread calculation if insufficient memory
+        let memory_per_thread = crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT;
+        (available_memory / memory_per_thread) as usize
+    };
 
     // Return the minimum of requested threads and memory-limited threads
     // Always allow at least 1 thread
@@ -142,11 +186,26 @@ pub async fn setup_session(
         if aggressive || check_mem {
             let total_gb = total_system_memory as f64 / 1024.0 / 1024.0 / 1024.0;
             let available_gb = total_gb * if aggressive { 0.90 } else { 0.85 };
+            let total_cores = crate::system::num_cores();
+            let multiplier = if aggressive {
+                if total_system_memory >= 16 * 1024 * 1024 * 1024 { 8 }
+                else if total_system_memory >= 8 * 1024 * 1024 * 1024 { 6 }
+                else if total_system_memory >= 4 * 1024 * 1024 * 1024 { 4 }
+                else { 2 }
+            } else {
+                if total_system_memory >= 8 * 1024 * 1024 * 1024 { 4 }
+                else if total_system_memory >= 4 * 1024 * 1024 * 1024 { 3 }
+                else { 2 }
+            };
+
             crate::print_cmd_info!(
                 "Memory calculation",
-                "System: {:.1}GB total, {:.1}GB available for proving, requested: {} threads, calculated max: {} threads",
+                "System: {:.1}GB total, {:.1}GB available, {} cores, {}x subprocess multiplier ({} mode), requested: {} threads, calculated max: {} threads",
                 total_gb,
                 available_gb,
+                total_cores,
+                multiplier,
+                if aggressive { "aggressive" } else { "standard" },
                 num_workers,
                 memory_clamped_workers
             );
@@ -157,7 +216,7 @@ pub async fn setup_session(
             let available_gb = total_gb * if aggressive { 0.90 } else { 0.85 };
             crate::print_cmd_warn!(
                 "Memory limit",
-                "Reduced thread count from {} to {} due to insufficient memory ({} mode). System: {:.1}GB total, {:.1}GB available, each thread needs ~2GB.",
+                "Reduced thread count from {} to {} due to insufficient memory ({} mode). System: {:.1}GB total, {:.1}GB available. Using optimized subprocess memory calculation.",
                 num_workers,
                 memory_clamped_workers,
                 mode_text,
