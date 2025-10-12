@@ -10,7 +10,7 @@ use nexus_sdk::{
     Local, Prover,
     stwo::seq::{Proof, Stwo},
 };
-use postcard::from_bytes;
+use postcard::{from_bytes, to_allocvec};
 use std::env;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
@@ -61,6 +61,9 @@ impl ProvingEngine {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+
+        // Apply maximum performance optimizations for high-throughput parallel processing
+        Self::apply_performance_optimizations(&mut cmd);
 
         // Serialize inputs as binary for faster transfer
         let input_bytes = postcard::to_allocvec(inputs)?;
@@ -114,16 +117,18 @@ impl ProvingEngine {
         Ok(proof)
     }
 
-    /// Apply safe performance optimizations to subprocess
-    #[allow(dead_code)] // Used for optimization, may be enabled conditionally
+    /// Apply maximum performance optimizations to subprocess for high-throughput parallel processing
     fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
-        // Conservative memory optimizations - avoid thread count variables that may conflict with SDK
-        cmd.env("MALLOC_ARENA_MAX", "4");
-        cmd.env("MALLOC_CONF", "dirty_decay_ms:1000,muzzy_decay_ms:1000");
+        // Aggressive memory optimizations for maximum throughput
+        cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
+        cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
 
-        // Process spawning optimizations
+        // Maximum process spawning optimizations for parallel throughput
         cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace collection for faster startup
         cmd.env("RUST_LOG", "off"); // Disable logging overhead in subprocess
+        cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
+
+        // Process group and scheduling optimizations
         cmd.process_group(0); // Create new process group for better management
     }
 }

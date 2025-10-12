@@ -55,21 +55,42 @@ impl ProvingPipeline {
         let environment_shared = Arc::new(environment.clone());
         let client_id_shared = Arc::new(client_id.to_string());
 
-        // Conservative concurrency to avoid memory pressure and context switching overhead
-        let optimized_workers = std::cmp::min(num_workers, crate::system::num_cores());
+        // Maximum parallelization: run many more subprocesses than CPU cores
+        // Since each subprocess is I/O bound and mostly waits for SDK, we can over-subscribe
+        let cores = crate::system::num_cores();
+        let total_memory_gb = crate::system::total_memory_gb();
+
+        // Aggressive concurrency scaling - much higher than core count
+        let max_concurrency = if total_memory_gb >= 32.0 {
+            // High-end systems: 8x cores for maximum throughput
+            cores * 8
+        } else if total_memory_gb >= 16.0 {
+            // Mid-high systems: 6x cores
+            cores * 6
+        } else if total_memory_gb >= 8.0 {
+            // Mid-range systems: 4x cores
+            cores * 4
+        } else {
+            // Low-end systems: 2x cores
+            cores * 2
+        };
+
+        // Cap at reasonable limit and available inputs
+        let optimized_workers = std::cmp::min(num_workers, max_concurrency).min(all_inputs.len());
         let semaphore = Arc::new(tokio::sync::Semaphore::new(optimized_workers));
 
         // Create cancellation token for graceful shutdown
         let cancellation_token = CancellationToken::new();
 
-        // Dynamic batch sizing based on available memory and input count
-        let total_memory_gb = crate::system::total_memory_gb();
-        let batch_size = if total_memory_gb >= 16.0 && all_inputs.len() > 8 {
-            8 // High-end systems: process 8 at a time
-        } else if total_memory_gb >= 8.0 && all_inputs.len() > 4 {
-            6 // Mid-range systems: process 6 at a time
+        // Aggressive batch sizing - process much larger batches for maximum throughput
+        let batch_size = if total_memory_gb >= 32.0 {
+            std::cmp::min(50, all_inputs.len()) // High-end: up to 50 concurrent proofs
+        } else if total_memory_gb >= 16.0 {
+            std::cmp::min(25, all_inputs.len()) // Mid-high: up to 25 concurrent proofs
+        } else if total_memory_gb >= 8.0 {
+            std::cmp::min(15, all_inputs.len()) // Mid-range: up to 15 concurrent proofs
         } else {
-            4 // Low-end systems: stay conservative
+            std::cmp::min(8, all_inputs.len())  // Low-end: up to 8 concurrent proofs
         };
         let mut all_proofs = Vec::with_capacity(all_inputs.len());
         let mut proof_hashes = Vec::with_capacity(all_inputs.len());
