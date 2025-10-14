@@ -65,11 +65,6 @@ impl ProvingEngine {
         // Apply maximum performance optimizations for high-throughput parallel processing
         Self::apply_performance_optimizations(&mut cmd);
 
-        // Log memory usage before spawning subprocess for debugging
-        if std::env::var("NEXUS_1GB_MODE").is_ok() {
-            crate::print_cmd_info!("Memory Debug", "About to spawn subprocess for proof generation");
-        }
-
         // Serialize inputs as binary for faster transfer
         let input_bytes = postcard::to_allocvec(inputs)?;
 
@@ -149,25 +144,10 @@ impl ProvingEngine {
 
     /// Apply maximum performance optimizations to subprocess for high-throughput parallel processing
     fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
-        // Check if we're on a low-memory system (detect via environment or heuristic)
-        let is_low_memory = std::env::var("NEXUS_LOW_MEMORY").is_ok() ||
-                           std::env::var("NEXUS_1GB_MODE").is_ok();
-
-        if is_low_memory {
-            // Extreme memory settings for 1GB systems - minimum viable
-            cmd.env("MALLOC_ARENA_MAX", "1"); // Single arena to minimize overhead
-            cmd.env("MALLOC_CONF", "dirty_decay_ms:10,muzzy_decay_ms:10,background_thread:false,lg_chunk:17,abort:true,prof:true");
-            cmd.env("RUST_MIN_STACK", "131072"); // 128KB stack - dangerously small
-            cmd.env("TOKIO_WORKER_THREADS", "1"); // Single thread runtime
-            cmd.env("RAYON_NUM_THREADS", "1"); // Force single thread for rayon
-            cmd.env("RUSTC_NUM_JOBS", "1"); // Single job for rustc if used internally
-            cmd.env("RUST_BACKTRACE", "0"); // No backtraces
-        } else {
-            // Standard aggressive memory optimizations for normal systems
-            cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
-            cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
-            cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
-        }
+        // Standard aggressive memory optimizations for normal systems
+        cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
+        cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
+        cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
 
         // Maximum process spawning optimizations for parallel throughput
         cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace collection for faster startup

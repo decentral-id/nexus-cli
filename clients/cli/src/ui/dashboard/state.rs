@@ -79,12 +79,6 @@ impl DashboardState {
         start_time: Instant,
         ui_config: UIConfig,
     ) -> Self {
-        // Check if we're on a low-memory system
-        let is_low_memory = std::env::var("NEXUS_1GB_MODE").is_ok();
-
-        // Reduce buffer sizes on low-memory systems
-        let max_activity_logs = if is_low_memory { 25 } else { MAX_ACTIVITY_LOGS };
-
         Self {
             node_id,
             environment,
@@ -93,8 +87,8 @@ impl DashboardState {
             current_task: None,
             total_ram_gb: crate::system::total_memory_gb(),
             num_threads: ui_config.num_threads,
-            pending_events: VecDeque::with_capacity(if is_low_memory { 50 } else { 100 }),
-            activity_logs: VecDeque::with_capacity(max_activity_logs),
+            pending_events: VecDeque::with_capacity(100),
+            activity_logs: VecDeque::with_capacity(MAX_ACTIVITY_LOGS),
             update_available: ui_config.update_available,
             latest_version: ui_config.latest_version,
             with_background_color: ui_config.with_background_color,
@@ -105,11 +99,7 @@ impl DashboardState {
             tick: 0,
             last_submission_timestamp: None,
             fetching_state: FetchingState::Idle,
-            sysinfo: if is_low_memory {
-                System::new_with_specifics(sysinfo::RefreshKind::nothing())
-            } else {
-                System::new_all() // Initialize with all data for first refresh
-            },
+            sysinfo: System::new_all(), // Initialize with all data for first refresh
             current_prover_state: ProverState::Waiting,
             step2_start_time: None,
             waiting_start_info: None,
@@ -147,10 +137,7 @@ impl DashboardState {
 
     /// Add an event to activity logs with size limit
     pub fn add_to_activity_log(&mut self, event: WorkerEvent) {
-        let is_low_memory = std::env::var("NEXUS_1GB_MODE").is_ok();
-        let max_logs = if is_low_memory { 25 } else { MAX_ACTIVITY_LOGS };
-
-        if self.activity_logs.len() >= max_logs {
+        if self.activity_logs.len() >= MAX_ACTIVITY_LOGS {
             self.activity_logs.pop_front();
         }
         self.activity_logs.push_back(event);
