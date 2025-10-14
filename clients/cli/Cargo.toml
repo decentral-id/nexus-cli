@@ -17,12 +17,12 @@ opt-level = 1
 
 [profile.release]
 opt-level = 3          # Maximum optimization for best runtime performance
-lto = "fat"            # Full LTO for maximum optimization across crates
-codegen-units = 1      # Single codegen unit for maximum optimization
+lto = "thin"           # Thin LTO for good performance with reasonable memory usage
+codegen-units = 8      # More codegen units for faster compilation on low-memory systems
 panic = 'abort'        # Abort on panic (smaller binaries, better performance)
 strip = true           # Strip symbols for smaller binaries
 debug = false          # No debug symbols for faster builds
-incremental = false    # Disable incremental compilation for maximum optimization
+incremental = false    # Disable incremental compilation for optimization
 
 [profile.ci-build]
 inherits = "dev"
