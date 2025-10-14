@@ -149,11 +149,13 @@ impl ProvingEngine {
                            std::env::var("NEXUS_1GB_MODE").is_ok();
 
         if is_low_memory {
-            // Ultra-conservative memory settings for 1GB systems
+            // Ultra-aggressive memory settings for 1GB systems
             cmd.env("MALLOC_ARENA_MAX", "1"); // Single arena to minimize overhead
-            cmd.env("MALLOC_CONF", "dirty_decay_ms:100,muzzy_decay_ms:100,background_thread:false,lg_chunk:19");
-            cmd.env("RUST_MIN_STACK", "524288"); // 512KB stack for subprocess threads
+            cmd.env("MALLOC_CONF", "dirty_decay_ms:50,muzzy_decay_ms:50,background_thread:false,lg_chunk:18,abort:true");
+            cmd.env("RUST_MIN_STACK", "262144"); // 256KB stack for subprocess threads (extremely small)
             cmd.env("TOKIO_WORKER_THREADS", "1"); // Single thread runtime
+            cmd.env("RAYON_NUM_THREADS", "1"); // Force single thread for rayon
+            cmd.env("RUSTC_NUM_JOBS", "1"); // Single job for rustc if used internally
         } else {
             // Standard aggressive memory optimizations for normal systems
             cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation

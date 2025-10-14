@@ -41,22 +41,30 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
     let total_cores = crate::system::num_cores();
 
     // Calculate memory per subprocess based on actual usage patterns with larger safety margins
-    // Main process: ~50MB base + subprocess overhead
+    // Main process: minimal base for ultra-low-memory systems
     // Each subprocess: actual usage can vary significantly by task size and complexity
     let base_process_memory = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
-        30 * 1024 * 1024 // 30MB base for ultra-low-memory systems
+        20 * 1024 * 1024 // 20MB base for ultra-low-memory systems (extremely conservative)
     } else {
         50 * 1024 * 1024 // 50MB base for normal systems
     };
 
     let memory_per_subprocess = if aggressive {
-        60 * 1024 * 1024 // 60MB per subprocess in aggressive mode (higher performance)
+        if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+            35 * 1024 * 1024 // 35MB per subprocess in aggressive mode for 1GB systems
+        } else {
+            60 * 1024 * 1024 // 60MB per subprocess in aggressive mode (higher performance)
+        }
     } else {
-        40 * 1024 * 1024 // 40MB per subprocess in standard mode (balanced)
+        if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+            25 * 1024 * 1024 // 25MB per subprocess in standard mode for 1GB systems
+        } else {
+            40 * 1024 * 1024 // 40MB per subprocess in standard mode (balanced)
+        }
     };
 
     // Calculate maximum subprocesses based on aggressive parallelization strategy
-    // Using consistent 40-60MB per subprocess memory allocation across all systems
+    // Using reduced memory allocation for 1GB systems: 25-35MB per subprocess
     let multiplier = if aggressive {
         if total_system_memory >= 16 * 1024 * 1024 * 1024 { // 16GB+
             6 // High-end systems: 6x cores (reduced from 8 for memory)
@@ -87,7 +95,7 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
 
     // Calculate max threads based on total system memory and optimization mode
     let memory_reserve_ratio = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
-        0.25 // Reserve 25% for ultra-low-memory systems (more conservative)
+        0.40 // Reserve 40% for ultra-low-memory systems (extremely conservative)
     } else if aggressive {
         0.10 // Aggressive: reserve only 10%
     } else {
@@ -101,7 +109,7 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
     } else {
         // Fall back to memory-per-thread calculation if insufficient memory
         let memory_per_thread = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
-            256 * 1024 * 1024 // 256MB per thread for ultra-low-memory systems
+            200 * 1024 * 1024 // 200MB per thread for ultra-low-memory systems (extremely conservative)
         } else if total_system_memory <= 2 * 1024 * 1024 * 1024 { // <= 2GB systems
             512 * 1024 * 1024 // 512MB per thread for low-memory systems
         } else {
@@ -201,7 +209,11 @@ pub async fn setup_session(
                 else { 1 }
             };
 
-            let subprocess_memory_mb = if aggressive { 60 } else { 40 };
+            let subprocess_memory_mb = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+            if aggressive { 35 } else { 25 }
+        } else {
+            if aggressive { 60 } else { 40 }
+        };
 
             crate::print_cmd_info!(
                 "Memory calculation",
@@ -221,7 +233,11 @@ pub async fn setup_session(
             let total_gb = total_system_memory as f64 / 1024.0 / 1024.0 / 1024.0;
             let available_ratio = if total_system_memory <= 1024 * 1024 * 1024 { 0.75 } else if aggressive { 0.90 } else { 0.85 };
             let available_gb = total_gb * available_ratio;
-            let subprocess_memory_mb = if aggressive { 60 } else { 40 };
+            let subprocess_memory_mb = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+            if aggressive { 35 } else { 25 }
+        } else {
+            if aggressive { 60 } else { 40 }
+        };
             crate::print_cmd_warn!(
                 "Memory limit",
                 "Reduced thread count from {} to {} due to insufficient memory ({} mode). System: {:.1}GB total, {:.1}GB available, {}MB per subprocess. Using optimized memory calculation for low-memory systems.",
