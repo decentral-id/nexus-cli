@@ -252,27 +252,33 @@ pub async fn setup_session(
         }
     }
 
-    // Set low memory environment variable for 1GB systems to enable ultra-optimized settings
+    // Check system memory and provide appropriate warnings/recommendations
     let mut sysinfo_for_check = System::new();
     sysinfo_for_check.refresh_memory();
     let total_system_memory_for_check = sysinfo_for_check.total_memory();
-    if total_system_memory_for_check <= 1024 * 1024 * 1024 {
+
+    if total_system_memory_for_check < 1500 * 1024 * 1024 { // < 1.5GB
+        crate::print_cmd_error!(
+            "Hardware Incompatible",
+            "Systems with <1.5GB RAM cannot run zero-knowledge proof generation effectively."
+        );
+        crate::print_cmd_info!(
+            "Minimum Requirements",
+            "• 2GB RAM (minimum for basic operation)\n• 4GB+ RAM (recommended for stable performance)\n• 8GB+ RAM (optimal for high-throughput proving)"
+        );
+        crate::print_cmd_info!(
+            "Recommendation",
+            "Please upgrade to a system with at least 2GB RAM to use Nexus Network CLI."
+        );
+    }
+
+    if total_system_memory_for_check <= 1024 * 1024 * 1024 { // <= 1GB
         unsafe {
             std::env::set_var("NEXUS_1GB_MODE", "1");
         }
         crate::print_cmd_info!(
             "Low memory mode",
-            "Enabled 1GB RAM optimizations (reduced memory allocation, single-threaded subprocesses)"
-        );
-
-        // Add critical warning for 1GB systems
-        crate::print_cmd_warn!(
-            "1GB System Warning",
-            "This system has minimal RAM. Proof generation requires significant memory and may still fail."
-        );
-        crate::print_cmd_warn!(
-            "Hardware Recommendation",
-            "For stable operation, 2GB+ RAM is recommended. 1GB systems are below minimum requirements."
+            "Enabled 1GB RAM optimizations (though operation will still fail due to hardware limitations)"
         );
     }
 
