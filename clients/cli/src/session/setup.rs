@@ -43,11 +43,24 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
     // Calculate memory per subprocess based on actual usage patterns with larger safety margins
     // Main process: ~50MB base + subprocess overhead
     // Each subprocess: actual usage can vary significantly by task size and complexity
-    let base_process_memory = 50 * 1024 * 1024; // 50MB base for main process
-    let memory_per_subprocess = if aggressive {
-        60 * 1024 * 1024 // 60MB per subprocess in aggressive mode (higher performance)
+    let base_process_memory = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+        30 * 1024 * 1024 // 30MB base for ultra-low-memory systems
     } else {
-        40 * 1024 * 1024 // 40MB per subprocess in standard mode (balanced)
+        50 * 1024 * 1024 // 50MB base for normal systems
+    };
+
+    let memory_per_subprocess = if aggressive {
+        if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+            25 * 1024 * 1024 // 25MB per subprocess in aggressive mode for 1GB systems
+        } else {
+            60 * 1024 * 1024 // 60MB per subprocess in aggressive mode (higher performance)
+        }
+    } else {
+        if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+            20 * 1024 * 1024 // 20MB per subprocess in standard mode for 1GB systems
+        } else {
+            40 * 1024 * 1024 // 40MB per subprocess in standard mode (balanced)
+        }
     };
 
     // Calculate maximum subprocesses based on aggressive parallelization strategy
@@ -59,16 +72,20 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
             4 // Mid-high systems: 4x cores (reduced from 6 for memory)
         } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
             3 // Mid-range systems: 3x cores (reduced from 4 for memory)
-        } else {
-            2 // Low-end systems: 2x cores (unchanged)
+        } else if total_system_memory >= 2 * 1024 * 1024 * 1024 { // 2GB+
+            2 // Low-end systems: 2x cores
+        } else { // <= 1GB
+            1 // Ultra-low-memory systems: 1x core only
         }
     } else {
         if total_system_memory >= 8 * 1024 * 1024 * 1024 { // 8GB+
             3 // Standard mode: conservative (reduced from 4 for memory)
         } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
             2 // Standard mode: moderate (reduced from 3 for memory)
-        } else {
-            2 // Standard mode: minimal (unchanged)
+        } else if total_system_memory >= 2 * 1024 * 1024 * 1024 { // 2GB+
+            1 // Standard mode: minimal for 2GB systems
+        } else { // <= 1GB
+            1 // Standard mode: minimal for 1GB systems
         }
     };
 
@@ -77,15 +94,27 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
     let total_required_memory = (base_process_memory + total_subprocess_memory) as u64;
 
     // Calculate max threads based on total system memory and optimization mode
-    let memory_reserve_ratio = if aggressive { 0.10 } else { 0.15 }; // Aggressive: reserve only 10%
+    let memory_reserve_ratio = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+        0.25 // Reserve 25% for ultra-low-memory systems (more conservative)
+    } else if aggressive {
+        0.10 // Aggressive: reserve only 10%
+    } else {
+        0.15 // Standard: reserve 15%
+    };
     let available_memory = (total_system_memory as f64 * (1.0 - memory_reserve_ratio)) as u64;
 
     // Allow more threads on systems with sufficient memory for parallel subprocess strategy
     let max_threads_by_memory = if total_required_memory <= available_memory {
         requested_threads // Allow requested threads if memory permits subprocess strategy
     } else {
-        // Fall back to conservative 2GB per thread calculation if insufficient memory
-        let memory_per_thread = crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT;
+        // Fall back to memory-per-thread calculation if insufficient memory
+        let memory_per_thread = if total_system_memory <= 1024 * 1024 * 1024 { // <= 1GB systems
+            256 * 1024 * 1024 // 256MB per thread for ultra-low-memory systems
+        } else if total_system_memory <= 2 * 1024 * 1024 * 1024 { // <= 2GB systems
+            512 * 1024 * 1024 // 512MB per thread for low-memory systems
+        } else {
+            crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT // 2GB for normal systems
+        };
         (available_memory / memory_per_thread) as usize
     };
 
@@ -165,27 +194,36 @@ pub async fn setup_session(
         // Debug output for memory calculation
         if aggressive || check_mem {
             let total_gb = total_system_memory as f64 / 1024.0 / 1024.0 / 1024.0;
-            let available_gb = total_gb * if aggressive { 0.90 } else { 0.85 };
+            let available_ratio = if total_system_memory <= 1024 * 1024 * 1024 { 0.75 } else if aggressive { 0.90 } else { 0.85 };
+            let available_gb = total_gb * available_ratio;
             let total_cores = crate::system::num_cores();
             let multiplier = if aggressive {
-                if total_system_memory >= 16 * 1024 * 1024 * 1024 { 8 }
-                else if total_system_memory >= 8 * 1024 * 1024 * 1024 { 6 }
-                else if total_system_memory >= 4 * 1024 * 1024 * 1024 { 4 }
-                else { 2 }
-            } else {
-                if total_system_memory >= 8 * 1024 * 1024 * 1024 { 4 }
+                if total_system_memory >= 16 * 1024 * 1024 * 1024 { 6 }
+                else if total_system_memory >= 8 * 1024 * 1024 * 1024 { 4 }
                 else if total_system_memory >= 4 * 1024 * 1024 * 1024 { 3 }
-                else { 2 }
+                else if total_system_memory >= 2 * 1024 * 1024 * 1024 { 2 }
+                else { 1 }
+            } else {
+                if total_system_memory >= 8 * 1024 * 1024 * 1024 { 3 }
+                else if total_system_memory >= 4 * 1024 * 1024 * 1024 { 2 }
+                else { 1 }
+            };
+
+            let subprocess_memory_mb = if total_system_memory <= 1024 * 1024 * 1024 {
+                if aggressive { 25 } else { 20 }
+            } else {
+                if aggressive { 60 } else { 40 }
             };
 
             crate::print_cmd_info!(
                 "Memory calculation",
-                "System: {:.1}GB total, {:.1}GB available, {} cores, {}x subprocess multiplier ({} mode), requested: {} threads, calculated max: {} threads",
+                "System: {:.1}GB total, {:.1}GB available, {} cores, {}x subprocess multiplier ({} mode), {}MB per subprocess, requested: {} threads, calculated max: {} threads",
                 total_gb,
                 available_gb,
                 total_cores,
                 multiplier,
                 if aggressive { "aggressive" } else { "standard" },
+                subprocess_memory_mb,
                 num_workers,
                 memory_clamped_workers
             );
@@ -193,18 +231,39 @@ pub async fn setup_session(
         if memory_clamped_workers < num_workers {
             let mode_text = if aggressive { "aggressive" } else { "standard" };
             let total_gb = total_system_memory as f64 / 1024.0 / 1024.0 / 1024.0;
-            let available_gb = total_gb * if aggressive { 0.90 } else { 0.85 };
+            let available_ratio = if total_system_memory <= 1024 * 1024 * 1024 { 0.75 } else if aggressive { 0.90 } else { 0.85 };
+            let available_gb = total_gb * available_ratio;
+            let subprocess_memory_mb = if total_system_memory <= 1024 * 1024 * 1024 {
+                if aggressive { 25 } else { 20 }
+            } else {
+                if aggressive { 60 } else { 40 }
+            };
             crate::print_cmd_warn!(
                 "Memory limit",
-                "Reduced thread count from {} to {} due to insufficient memory ({} mode). System: {:.1}GB total, {:.1}GB available. Using optimized subprocess memory calculation.",
+                "Reduced thread count from {} to {} due to insufficient memory ({} mode). System: {:.1}GB total, {:.1}GB available, {}MB per subprocess. Using optimized memory calculation for low-memory systems.",
                 num_workers,
                 memory_clamped_workers,
                 mode_text,
                 total_gb,
-                available_gb
+                available_gb,
+                subprocess_memory_mb
             );
             num_workers = memory_clamped_workers;
         }
+    }
+
+    // Set low memory environment variable for 1GB systems to enable ultra-optimized settings
+    let mut sysinfo_for_check = System::new();
+    sysinfo_for_check.refresh_memory();
+    let total_system_memory_for_check = sysinfo_for_check.total_memory();
+    if total_system_memory_for_check <= 1024 * 1024 * 1024 {
+        unsafe {
+            std::env::set_var("NEXUS_1GB_MODE", "1");
+        }
+        crate::print_cmd_info!(
+            "Low memory mode",
+            "Enabled 1GB RAM optimizations (reduced memory allocation, single-threaded subprocesses)"
+        );
     }
 
     // Additional memory warning if explicitly requested

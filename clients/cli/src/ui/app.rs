@@ -134,7 +134,12 @@ impl App {
 /// Runs the application UI in a loop, handling events and rendering the appropriate screen.
 pub async fn run<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> std::io::Result<()> {
     let splash_start = Instant::now();
-    let splash_duration = Duration::from_secs(2);
+    // Reduce splash duration on low-memory systems to minimize UI overhead
+    let is_low_memory = std::env::var("NEXUS_1GB_MODE").is_ok();
+    let splash_duration = if is_low_memory { Duration::from_millis(500) } else { Duration::from_secs(2) };
+
+    // Reduce event polling frequency on low-memory systems
+    let poll_interval = if is_low_memory { Duration::from_millis(250) } else { Duration::from_millis(100) };
 
     // UI event loop
     loop {
@@ -183,8 +188,8 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> std::i
             }
         }
 
-        // Poll for key events
-        if event::poll(Duration::from_millis(100))? {
+        // Poll for key events with memory-optimized interval
+        if event::poll(poll_interval)? {
             if let Event::Key(key) = event::read()? {
                 // Skip events that are not KeyEventKind::Press
                 if key.kind == event::KeyEventKind::Release {

@@ -115,14 +115,26 @@ impl ProvingEngine {
 
     /// Apply maximum performance optimizations to subprocess for high-throughput parallel processing
     fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
-        // Aggressive memory optimizations for maximum throughput
-        cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
-        cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
+        // Check if we're on a low-memory system (detect via environment or heuristic)
+        let is_low_memory = std::env::var("NEXUS_LOW_MEMORY").is_ok() ||
+                           std::env::var("NEXUS_1GB_MODE").is_ok();
+
+        if is_low_memory {
+            // Ultra-conservative memory settings for 1GB systems
+            cmd.env("MALLOC_ARENA_MAX", "1"); // Single arena to minimize overhead
+            cmd.env("MALLOC_CONF", "dirty_decay_ms:100,muzzy_decay_ms:100,background_thread:false,lg_chunk:19");
+            cmd.env("RUST_MIN_STACK", "524288"); // 512KB stack for subprocess threads
+            cmd.env("TOKIO_WORKER_THREADS", "1"); // Single thread runtime
+        } else {
+            // Standard aggressive memory optimizations for normal systems
+            cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
+            cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
+            cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
+        }
 
         // Maximum process spawning optimizations for parallel throughput
         cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace collection for faster startup
         cmd.env("RUST_LOG", "off"); // Disable logging overhead in subprocess
-        cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
 
         // Process group and scheduling optimizations
         cmd.process_group(0); // Create new process group for better management
