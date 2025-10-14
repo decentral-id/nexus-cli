@@ -264,6 +264,16 @@ pub async fn setup_session(
             "Low memory mode",
             "Enabled 1GB RAM optimizations (reduced memory allocation, single-threaded subprocesses)"
         );
+
+        // Add critical warning for 1GB systems
+        crate::print_cmd_warn!(
+            "1GB System Warning",
+            "This system has minimal RAM. Proof generation requires significant memory and may still fail."
+        );
+        crate::print_cmd_warn!(
+            "Hardware Recommendation",
+            "For stable operation, 2GB+ RAM is recommended. 1GB systems are below minimum requirements."
+        );
     }
 
     // Additional memory warning if explicitly requested
