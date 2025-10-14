@@ -72,8 +72,20 @@ impl ProvingEngine {
 
         // Write binary inputs to subprocess stdin
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(&input_bytes).await?;
-            // stdin is dropped here, closing the pipe to signal EOF
+            match stdin.write_all(&input_bytes).await {
+                Ok(()) => {
+                    // Explicitly flush and close stdin to signal EOF
+                    drop(stdin);
+                }
+                Err(e) => {
+                    // If stdin write fails, the pipe might already be broken
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        // Continue waiting for the child process, as it might still be running
+                    } else {
+                        return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
+                    }
+                }
+            }
         }
 
         let output = child.wait_with_output().await?;
@@ -96,6 +108,17 @@ impl ProvingEngine {
                         &String::from_utf8_lossy(&output.stderr)
                     )));
                 }
+
+                // Check if the process was terminated by SIGPIPE (32) or other signal-related exit codes
+                if code >= 128 && code != 137 { // 137 is OOM, others are signals
+                    // If it's SIGPIPE (exit code 141 = 128 + 13), this is likely due to shutdown and not a real error
+                    if code - 128 == 13 { // SIGPIPE
+                        // Don't treat SIGPIPE as an error during shutdown
+                        return Err(ProverError::Subprocess(format!(
+                            "Subprocess terminated by SIGPIPE (broken pipe) - likely during shutdown"
+                        )));
+                    }
+                }
             }
 
             return Err(ProverError::Subprocess(format!(
@@ -105,7 +128,13 @@ impl ProvingEngine {
         }
 
         // Deserialize proof from subprocess stdout
-        let proof: Proof = from_bytes(&output.stdout)?;
+        let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
+            ProverError::Subprocess(format!(
+                "Failed to deserialize proof from subprocess stdout: {} (stdout len: {})",
+                e,
+                output.stdout.len()
+            ))
+        })?;
 
         // Skip redundant verification in main process
         // Verification is already done in subprocess via verifier::check_exit_code()
