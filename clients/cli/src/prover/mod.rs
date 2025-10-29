@@ -1,3 +1,4 @@
+pub mod adaptive_batch;
 pub mod engine;
 pub mod handlers;
 pub mod input;

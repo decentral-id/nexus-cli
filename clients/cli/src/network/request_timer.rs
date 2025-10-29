@@ -127,16 +127,6 @@ impl RequestTimer {
         }
     }
 
-    /// Set retry delay without recording a request (for internal use)
-    fn set_retry_delay(&mut self) {
-        let now = Instant::now();
-        // Don't override existing server retry delay - respect whatever time is left
-        // Only set default retry delay if there's no existing wait period
-        if self.server_retry_until.is_none() || self.server_retry_until.unwrap() <= now {
-            self.server_retry_until = Some(now + self.config.default_retry_delay);
-        }
-    }
-
     /// Record a failed request with optional server-provided retry delay
     /// If server_retry_delay is provided, it overrides all other timing logic
     pub fn record_failure(&mut self, server_retry_delay: Option<Duration>) {

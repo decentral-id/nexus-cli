@@ -1,5 +1,7 @@
 //! Core proving engine
 
+#![allow(dead_code)]
+
 use crate::prover::verifier;
 
 use super::types::ProverError;
@@ -65,15 +67,14 @@ impl ProvingEngine {
         // Apply maximum performance optimizations for high-throughput parallel processing
         Self::apply_performance_optimizations(&mut cmd);
 
-        // Serialize inputs as binary for faster transfer
-        let input_bytes = postcard::to_allocvec(inputs)?;
-
         let mut child = cmd.spawn()?;
 
-        // Write binary inputs to subprocess stdin
+        // Write binary inputs to subprocess stdin with zero-allocation
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(&input_bytes).await?;
-            // stdin is dropped here, closing the pipe to signal EOF
+            if let Err(e) = Self::write_inputs_direct(&mut stdin, inputs).await {
+                return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
+            }
+            // stdin is dropped here, which closes the pipe and signals EOF
         }
 
         let output = child.wait_with_output().await?;
@@ -96,6 +97,17 @@ impl ProvingEngine {
                         &String::from_utf8_lossy(&output.stderr)
                     )));
                 }
+
+                // Check if the process was terminated by SIGPIPE (32) or other signal-related exit codes
+                if code >= 128 && code != 137 { // 137 is OOM, others are signals
+                    // If it's SIGPIPE (exit code 141 = 128 + 13), this is likely due to shutdown and not a real error
+                    if code - 128 == 13 { // SIGPIPE
+                        // Don't treat SIGPIPE as an error during shutdown
+                        return Err(ProverError::Subprocess(format!(
+                            "Subprocess terminated by SIGPIPE (broken pipe) - likely during shutdown"
+                        )));
+                    }
+                }
             }
 
             return Err(ProverError::Subprocess(format!(
@@ -105,7 +117,13 @@ impl ProvingEngine {
         }
 
         // Deserialize proof from subprocess stdout
-        let proof: Proof = from_bytes(&output.stdout)?;
+        let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
+            ProverError::Subprocess(format!(
+                "Failed to deserialize proof from subprocess stdout: {} (stdout len: {})",
+                e,
+                output.stdout.len()
+            ))
+        })?;
 
         // Skip redundant verification in main process
         // Verification is already done in subprocess via verifier::check_exit_code()
@@ -113,16 +131,35 @@ impl ProvingEngine {
         Ok(proof)
     }
 
+    /// Write inputs directly to subprocess stdin with zero allocations
+    async fn write_inputs_direct(
+        stdin: &mut tokio::process::ChildStdin,
+        inputs: &(u32, u32, u32),
+    ) -> Result<(), ProverError> {
+        // Pre-allocated buffer on stack (ZERO allocation!)
+        let mut buffer = [0u8; 12];  // 3 x u32 = 12 bytes exactly
+
+        // Direct memory copy - no heap allocations!
+        buffer[0..4].copy_from_slice(&inputs.0.to_le_bytes());
+        buffer[4..8].copy_from_slice(&inputs.1.to_le_bytes());
+        buffer[8..12].copy_from_slice(&inputs.2.to_le_bytes());
+
+        stdin.write_all(&buffer).await?;
+        stdin.flush().await?;
+
+        Ok(())
+    }
+
     /// Apply maximum performance optimizations to subprocess for high-throughput parallel processing
-    fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
-        // Aggressive memory optimizations for maximum throughput
+    pub fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
+        // Standard aggressive memory optimizations for normal systems
         cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
         cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
+        cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
 
         // Maximum process spawning optimizations for parallel throughput
         cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace collection for faster startup
         cmd.env("RUST_LOG", "off"); // Disable logging overhead in subprocess
-        cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
 
         // Process group and scheduling optimizations
         cmd.process_group(0); // Create new process group for better management
