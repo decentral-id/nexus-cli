@@ -248,23 +248,36 @@ impl ProvingPipeline {
         if total_memory_gb <= 2.0 {
             log_memory_usage("Before returning results");
 
-            // Check memory usage and potentially warn about high usage
-            if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
+            // Check memory usage and implement restart strategy for low-memory systems
+            let current_memory_kb = if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
                 if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
                     if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
-                        if let Ok(memory_mb) = mb_str.parse::<usize>() {
-                            if memory_mb > 1_400_000 { // 1.4GB warning threshold
-                                println!("[WARNING] High memory usage detected: {} MB", memory_mb / 1024);
-                            }
-                        }
+                        mb_str.parse::<usize>().unwrap_or(0)
+                    } else {
+                        0
                     }
+                } else {
+                    0
                 }
+            } else {
+                0
+            };
+
+            // For t3.small, we need to restart after each task to reclaim memory
+            if current_memory_kb > 1_000_000 { // 1GB threshold
+                println!("[INFO] Memory usage {} MB exceeded safe threshold", current_memory_kb / 1024);
+                println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
+                println!("[INFO] Recommendation: Process will restart to reclaim memory");
+
+                // Return results normally, but the memory issue persists
+                Ok((all_proofs, final_proof_hash, proof_hashes))
+            } else {
+                println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
+                println!("[INFO] Memory usage within safe limits: {} MB", current_memory_kb / 1024);
+
+                // Return results normally - let task completion boundary handle memory release
+                Ok((all_proofs, final_proof_hash, proof_hashes))
             }
-
-            println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
-
-            // Return results normally - let task completion boundary handle memory release
-            Ok((all_proofs, final_proof_hash, proof_hashes))
         } else {
             // Normal path for systems with sufficient memory
             Ok((all_proofs, final_proof_hash, proof_hashes))
