@@ -250,8 +250,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 eprintln!("[SUBPROCESS DEBUG] Manual parsing of bytes: ({}, {}, {})", input1, input2, input3);
             }
 
-            let inputs: (u32, u32, u32) = postcard::from_bytes(&stdin_data)?;
-            eprintln!("[SUBPROCESS DEBUG] Postcard deserialized inputs: {:?}", inputs);
+            // Use manual parsing since main process sends raw binary data, not postcard data
+            if stdin_data.len() < 12 {
+                eprintln!("Error: Expected at least 12 bytes, got {}", stdin_data.len());
+                exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
+            }
+
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&stdin_data[0..4]);
+            let input1 = u32::from_le_bytes(bytes);
+
+            bytes.copy_from_slice(&stdin_data[4..8]);
+            let input2 = u32::from_le_bytes(bytes);
+
+            bytes.copy_from_slice(&stdin_data[8..12]);
+            let input3 = u32::from_le_bytes(bytes);
+
+            let inputs = (input1, input2, input3);
+            eprintln!("[SUBPROCESS DEBUG] Using manually parsed inputs: {:?}", inputs);
             match ProvingEngine::prove_fib_subprocess(&inputs) {
                 Ok(proof) => {
                     let bytes = to_allocvec(&proof)?;
