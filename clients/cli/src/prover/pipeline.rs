@@ -145,13 +145,27 @@ impl ProvingPipeline {
         let mut all_proofs = Vec::new();
         let mut proof_hashes = Vec::new();
         for (_input_index, input_data) in all_inputs.iter().enumerate() {
+            println!("[DEBUG] Processing input {}: {:?}", _input_index, input_data);
             let inputs = InputParser::parse_triple_input(input_data)?;
+            println!("[DEBUG] Parsed inputs: {:?}", inputs);
+
             let proof = ProvingEngine::prove_and_validate(&inputs, task, environment, client_id).await?;
+            println!("[DEBUG] Generated proof successfully, proof size: {} bytes",
+                std::mem::size_of_val(&proof));
+
             let proof_hash = Self::generate_proof_hash(&proof);
+            println!("[DEBUG] Generated proof hash: {} (length: {})",
+                proof_hash, proof_hash.len());
+
             all_proofs.push(proof);
             proof_hashes.push(proof_hash);
+            println!("[DEBUG] Added proof to collections. Total proofs: {}", all_proofs.len());
         }
         let final_proof_hash = Self::combine_proof_hashes(task, &proof_hashes);
+        println!("[DEBUG] Final combined hash: {} (length: {})",
+            final_proof_hash, final_proof_hash.len());
+        println!("[DEBUG] Returning {} proofs and {} hashes for submission",
+            all_proofs.len(), proof_hashes.len());
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
 
@@ -160,9 +174,14 @@ impl ProvingPipeline {
     /// Generate hash for a proof (original implementation)
     fn generate_proof_hash(proof: &Proof) -> String {
         let mut hasher = Keccak256::new();
-        postcard::to_io(proof, &mut hasher).unwrap();
+        let proof_bytes = postcard::to_allocvec(proof).unwrap();
+        println!("[DEBUG] Proof serialization: {} bytes", proof_bytes.len());
+        hasher.update(&proof_bytes);
         let hash = hasher.finalize();
-        hex::encode(hash)
+        let hash_hex = hex::encode(hash);
+        println!("[DEBUG] Proof hash result: {} (first 10 chars: {})",
+            hash_hex, &hash_hex[..10.min(hash_hex.len())]);
+        hash_hex
     }
 
     /// Generate hash for a proof with ultra-optimized thread-local buffer
@@ -184,16 +203,27 @@ impl ProvingPipeline {
 
     /// Combine multiple proof hashes based on task type
     fn combine_proof_hashes(task: &Task, proof_hashes: &[String]) -> String {
-        match task.task_type {
+        println!("[DEBUG] Combining {} proof hashes for task type: {:?}",
+            proof_hashes.len(), task.task_type);
+
+        let combined = match task.task_type {
             crate::nexus_orchestrator::TaskType::AllProofHashes
             | crate::nexus_orchestrator::TaskType::ProofHash => {
                 // Use all individual proof hashes
-                proof_hashes.join("")
+                let result = proof_hashes.join("");
+                println!("[DEBUG] Used all proof hashes, result length: {}", result.len());
+                result
             }
             _ => {
                 // Default combination for other task types
-                Task::combine_proof_hashes(proof_hashes)
+                let result = Task::combine_proof_hashes(proof_hashes);
+                println!("[DEBUG] Used default combination, result length: {}", result.len());
+                result
             }
-        }
+        };
+
+        println!("[DEBUG] Combined hash (first 20 chars): {}",
+            &combined[..20.min(combined.len())]);
+        combined
     }
 }
