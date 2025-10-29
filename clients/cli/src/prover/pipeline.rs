@@ -100,11 +100,20 @@ impl ProvingPipeline {
             ));
         }
 
+        // CRITICAL: Safety check for low-memory systems
+        let total_memory_gb = crate::system::total_memory_gb();
+        if total_memory_gb <= 2.0 && all_inputs.len() > 15 {
+            println!("[WARNING] Task has {} inputs - may be too many for 2GB system. Consider upgrading to t3.medium (4GB).", all_inputs.len());
+        }
+
         // Memory-optimized batch size for low-memory systems
         let total_memory_gb = crate::system::total_memory_gb();
         let (batch_size, use_adaptive_batching) = if total_memory_gb <= 2.0 {
-            // Very conservative batching for t3.small (2GB or less)
-            (1, false) // Always batch size 1 to minimize memory usage
+            // CRITICAL: Force single-proof processing for t3.small to prevent memory spikes
+            if all_inputs.len() > 1 {
+                println!("[CRITICAL] Low-memory system detected with {} inputs - forcing single-proof processing", all_inputs.len());
+            }
+            (1, false) // Always batch size 1 - NEVER parallelize on t3.small
         } else {
             // Use adaptive batching only for systems with more memory
             let batcher = get_global_batcher();
@@ -160,10 +169,26 @@ impl ProvingPipeline {
 
                     results.push(Ok(result));
 
-                    // Force garbage collection between proofs in low-memory mode
-                    if total_memory_gb <= 2.0 && local_index % 3 == 0 {
+                    // CRITICAL: Monitor memory after each proof in low-memory mode
+                    if total_memory_gb <= 2.0 {
                         log_memory_usage(&format!("After proof {}", local_index + 1));
-                        // Give system a chance to reclaim memory
+
+                        // Check memory after each proof - if approaching limit, stop immediately
+                        if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
+                            if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
+                                if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
+                                    if let Ok(memory_kb) = mb_str.parse::<usize>() {
+                                        if memory_kb > 1_100_000 { // 1.1GB warning threshold
+                                            println!("[EMERGENCY] Memory spike detected: {} MB - stopping batch to prevent OOM", memory_kb / 1024);
+                                            // Force immediate yield and continue
+                                            tokio::task::yield_now().await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Give system a chance to reclaim memory between proofs
                         tokio::task::yield_now().await;
                     }
                 }
