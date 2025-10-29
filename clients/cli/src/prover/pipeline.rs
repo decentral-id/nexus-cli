@@ -2,7 +2,6 @@
 
 #![allow(dead_code)]
 
-use std::cell::RefCell;
 use super::input::InputParser;
 use super::engine::ProvingEngine;
 use super::types::ProverError;
@@ -12,10 +11,6 @@ use nexus_sdk::stwo::seq::Proof;
 use sha3::{Digest, Keccak256};
 use hex;
 
-// Thread-local hash buffer for ultra-optimized hashing (no heap allocation!)
-thread_local! {
-    static HASH_BUFFER: RefCell<[u8; 32]> = RefCell::new([0u8; 32]);
-}
 
 /// Memory monitoring helper for low-memory systems
 fn log_memory_usage(context: &str) {
@@ -184,23 +179,7 @@ impl ProvingPipeline {
         hash_hex
     }
 
-    /// Generate hash for a proof with ultra-optimized thread-local buffer
-    #[allow(dead_code)]
-    fn generate_proof_hash_ultra_optimized(proof: &Proof) -> Result<String, ProverError> {
-        HASH_BUFFER.with(|buffer_cell| {
-            let mut buffer = buffer_cell.borrow_mut();
-
-            // Use stack buffer directly
-            let mut hasher = Keccak256::new();
-            postcard::to_io(proof, &mut hasher).map_err(ProverError::Serialization)?;
-
-            let hash = hasher.finalize();
-            buffer.copy_from_slice(&hash);
-
-            Ok(hex::encode(buffer.as_slice()))
-        })
-    }
-
+    
     /// Combine multiple proof hashes based on task type
     fn combine_proof_hashes(task: &Task, proof_hashes: &[String]) -> String {
         println!("[DEBUG] Combining {} proof hashes for task type: {:?}",
