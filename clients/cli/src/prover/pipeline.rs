@@ -241,7 +241,7 @@ impl ProvingPipeline {
         let final_proof_hash = Self::combine_proof_hashes(&task, &proof_hashes);
 
         // Return results first, then cleanup memory for low-memory systems
-        let result = (all_proofs, final_proof_hash, proof_hashes);
+        let mut result = (all_proofs, final_proof_hash, proof_hashes);
 
         if total_memory_gb <= 2.0 {
             log_memory_usage("Before cleanup");
