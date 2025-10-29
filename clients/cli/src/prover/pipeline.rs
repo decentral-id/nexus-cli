@@ -3,8 +3,6 @@
 use std::sync::Arc;
 use super::engine::ProvingEngine;
 use super::input::InputParser;
-use super::memory_pool::{MemoryPool, BatchArena, SerializationBuffer, PROOF_BUFFER_POOL, HASH_BUFFER_POOL};
-use super::process_pool::{ProcessGuard, PROCESS_POOL, initialize_process_pool};
 use super::types::ProverError;
 use crate::analytics::track_verification_failed;
 use crate::environment::Environment;
@@ -13,13 +11,9 @@ use futures::future::join_all;
 use nexus_sdk::stwo::seq::Proof;
 use sha3::{Digest, Keccak256};
 use tokio_util::sync::CancellationToken;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Orchestrates the complete proving pipeline
 pub struct ProvingPipeline;
-
-// Global initialization flag
-static POOL_INITIALIZED: std::sync::Once = std::sync::Once::new();
 
 impl ProvingPipeline {
     /// Execute authenticated proving for a task
@@ -29,14 +23,6 @@ impl ProvingPipeline {
         client_id: &str,
         num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
-        // Initialize process pool once
-        POOL_INITIALIZED.call_once(|| {
-            tokio::spawn(async {
-                if let Err(e) = initialize_process_pool().await {
-                    eprintln!("Warning: Failed to initialize process pool: {}", e);
-                }
-            });
-        });
         match task.program_id.as_str() {
             "fib_input_initial" => {
                 Self::prove_fib_task(task, environment, client_id, num_workers).await
@@ -48,7 +34,7 @@ impl ProvingPipeline {
         }
     }
 
-    /// Process fibonacci proving task with optimized single-task performance
+    /// Process fibonacci proving task with multiple inputs using streaming memory optimization
     async fn prove_fib_task(
         task: &Task,
         environment: &Environment,
@@ -63,41 +49,43 @@ impl ProvingPipeline {
             ));
         }
 
-        // Optimized for single-task performance since server limits to 1 task/120s
+        // Maximum parallelization: run many more subprocesses than CPU cores
+        // Since each subprocess is I/O bound and mostly waits for SDK, we can over-subscribe
         let cores = crate::system::num_cores();
         let total_memory_gb = crate::system::total_memory_gb();
 
-        // Optimized concurrency for single task completion speed
+        // Aggressive concurrency scaling - much higher than core count
         let max_concurrency = if total_memory_gb >= 32.0 {
-            cores * 4  // Reduced from 8x to focus on single-task efficiency
+            // High-end systems: 8x cores for maximum throughput
+            cores * 8
         } else if total_memory_gb >= 16.0 {
-            cores * 3  // Reduced from 6x
+            // Mid-high systems: 6x cores
+            cores * 6
         } else if total_memory_gb >= 8.0 {
-            cores * 2  // Reduced from 4x
+            // Mid-range systems: 4x cores
+            cores * 4
         } else {
-            cores.max(1) // At least 1 worker
+            // Low-end systems: 2x cores
+            cores * 2
         };
 
-        // Cap at reasonable limit for single task
+        // Cap at reasonable limit and available inputs
         let optimized_workers = std::cmp::min(num_workers, max_concurrency).min(all_inputs.len());
         let semaphore = Arc::new(tokio::sync::Semaphore::new(optimized_workers));
 
         // Create cancellation token for graceful shutdown
         let cancellation_token = CancellationToken::new();
 
-        // Optimized batch sizing for single-task completion
+        // Aggressive batch sizing - process much larger batches for maximum throughput
         let batch_size = if total_memory_gb >= 32.0 {
-            std::cmp::min(20, all_inputs.len()) // Reduced from 50 for better single-task focus
+            std::cmp::min(50, all_inputs.len()) // High-end: up to 50 concurrent proofs
         } else if total_memory_gb >= 16.0 {
-            std::cmp::min(12, all_inputs.len()) // Reduced from 25
+            std::cmp::min(25, all_inputs.len()) // Mid-high: up to 25 concurrent proofs
         } else if total_memory_gb >= 8.0 {
-            std::cmp::min(8, all_inputs.len())  // Reduced from 15
+            std::cmp::min(15, all_inputs.len()) // Mid-range: up to 15 concurrent proofs
         } else {
-            std::cmp::min(4, all_inputs.len())  // Reduced from 8
+            std::cmp::min(8, all_inputs.len())  // Low-end: up to 8 concurrent proofs
         };
-
-        // Use batch arena for memory efficiency
-        let mut arena = BatchArena::new();
         let mut all_proofs = Vec::with_capacity(all_inputs.len());
         let mut proof_hashes = Vec::with_capacity(all_inputs.len());
         let mut verification_failures = Vec::new();
@@ -111,7 +99,7 @@ impl ProvingPipeline {
             let batch_environment = environment.clone();
             let batch_client_id = client_id.to_string();
 
-            // Process current batch with optimized memory management and process pool
+            // Process current batch with optimized references
             let handles: Vec<_> = batch_inputs
                 .iter()
                 .enumerate()
@@ -141,8 +129,8 @@ impl ProvingPipeline {
                         // Step 1: Parse and validate input
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
-                        // Step 2: Generate proof using pre-warmed process pool
-                        let proof = Self::prove_with_process_pool(
+                        // Step 2: Generate proof with optimized reference sharing
+                        let proof = ProvingEngine::prove_and_validate(
                             &inputs,
                             &task_ref,
                             &env_ref,
@@ -150,7 +138,7 @@ impl ProvingPipeline {
                         )
                         .await?;
 
-                        // Step 3: Generate proof hash with zero-allocation streaming
+                        // Step 3: Generate proof hash with memory-efficient streaming
                         let proof_hash = Self::generate_proof_hash_streaming(&proof)?;
 
                         Ok((proof, proof_hash, global_index))
@@ -230,81 +218,20 @@ impl ProvingPipeline {
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
 
-    /// Generate proof using pre-warmed process pool for maximum speed
-    async fn prove_with_process_pool(
-        inputs: &(u32, u32, u32),
-        task: &Task,
-        environment: &Environment,
-        client_id: &str,
-    ) -> Result<nexus_sdk::stwo::seq::Proof, ProverError> {
-        // Try to get a pre-warmed process first
-        match PROCESS_POOL.get_process().await {
-            Ok(mut process_guard) => {
-                // Use pre-warmed process for faster execution
-                let proof_bytes = process_guard.execute_proof(inputs).await?;
-
-                // Deserialize proof using zero-copy approach
-                let proof: nexus_sdk::stwo::seq::Proof = postcard::from_bytes(&proof_bytes)
-                    .map_err(|e| ProverError::Subprocess(
-                        format!("Failed to deserialize proof from process pool: {}", e)
-                    ))?;
-
-                Ok(proof)
-            }
-            Err(e) => {
-                // Fallback to regular proving if process pool fails
-                eprintln!("Warning: Process pool failed, falling back: {}", e);
-                ProvingEngine::prove_and_validate(inputs, task, environment, client_id).await
-            }
-        }
-    }
-
-    /// Generate hash for a proof with zero-allocation streaming and memory pool
+    /// Generate hash for a proof with zero-allocation streaming for maximum performance
     fn generate_proof_hash_streaming(proof: &Proof) -> Result<String, ProverError> {
-        // Try to get a buffer from the pool first
-        let mut hasher = if let Some(mut buffer) = HASH_BUFFER_POOL.acquire() {
-            // Use pooled buffer and create hasher
-            buffer.clear();
-            let mut hasher = Keccak256::new();
+        // Use direct serialization with hasher to avoid intermediate allocation
+        // This saves both memory allocation time and reduces memory pressure
 
-            // Serialize proof directly into hasher - no intermediate Vec allocation
-            postcard::to_io(proof, &mut hasher).map_err(ProverError::Serialization)?;
+        // Create hasher that can serialize directly
+        let mut hasher = Keccak256::new();
 
-            // Return buffer to pool
-            HASH_BUFFER_POOL.release(buffer);
-            hasher
-        } else {
-            // Fallback: create new hasher
-            let mut hasher = Keccak256::new();
-            postcard::to_io(proof, &mut hasher).map_err(ProverError::Serialization)?;
-            hasher
-        };
+        // Serialize proof directly into hasher - no intermediate Vec allocation
+        // This is the most memory-efficient approach
+        postcard::to_io(proof, &mut hasher).map_err(ProverError::Serialization)?;
 
         let hash = hasher.finalize();
         Ok(format!("{:x}", hash))
-    }
-
-    /// Generate hash for a proof with memory pool optimization
-    #[allow(dead_code)] // Alternative implementation kept for reference
-    fn generate_proof_hash_pooled(proof: &Proof) -> Result<String, ProverError> {
-        // Try to get a serialization buffer from the pool
-        if let Some(mut buffer) = PROOF_BUFFER_POOL.acquire() {
-            buffer.clear();
-
-            // Serialize into pooled buffer
-            postcard::to_io(proof, &mut buffer).map_err(ProverError::Serialization)?;
-
-            let hash = Keccak256::digest(&buffer);
-            let result = format!("{:x}", hash);
-
-            // Return buffer to pool
-            PROOF_BUFFER_POOL.release(buffer);
-
-            Ok(result)
-        } else {
-            // Fallback to standard method
-            Self::generate_proof_hash_streaming(proof)
-        }
     }
 
     /// Combine multiple proof hashes based on task type

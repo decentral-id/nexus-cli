@@ -1,8 +1,7 @@
-//! Network client with built-in retry, error handling, and HTTP/2 connection pooling
+//! Network client with built-in retry and error handling
 
 use super::error_handler::ErrorHandler;
 use super::request_timer::RequestTimer;
-use super::connection_pool::{get_client, return_client, initialize_connection_pool};
 use crate::consts::cli_consts;
 use crate::logging::LogLevel;
 use crate::orchestrator::Orchestrator;
@@ -10,7 +9,6 @@ use crate::orchestrator::error::OrchestratorError;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 
 use std::{cmp::min, time::Duration};
-use once_cell::sync::Lazy;
 
 /// Proof submission data grouped by business concern
 #[derive(Debug, Clone)]
@@ -51,31 +49,19 @@ impl ProofSubmission {
     }
 }
 
-/// Network client with built-in retry, request timing, and HTTP/2 connection pooling
+/// Network client with built-in retry and request timing
 pub struct NetworkClient {
     error_handler: ErrorHandler,
     request_timer: RequestTimer,
     max_retries: u32,
-    base_url: String,
 }
 
-// Global initialization flag
-static POOL_INITIALIZED: std::sync::Once = std::sync::Once::new();
-
 impl NetworkClient {
-    pub fn new(request_timer: RequestTimer, max_retries: u32, base_url: String) -> Self {
-        // Initialize connection pool once
-        POOL_INITIALIZED.call_once(|| {
-            tokio::spawn(async {
-                initialize_connection_pool().await;
-            });
-        });
-
+    pub fn new(request_timer: RequestTimer, max_retries: u32) -> Self {
         Self {
             error_handler: ErrorHandler::new(),
             request_timer,
             max_retries,
-            base_url,
         }
     }
 

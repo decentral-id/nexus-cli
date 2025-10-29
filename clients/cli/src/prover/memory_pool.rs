@@ -3,7 +3,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use nexus_sdk::stwo::seq::Proof;
-use once_cell::sync::Lazy;
 
 /// Thread-safe memory pool for reusable buffers
 pub struct MemoryPool<T> {
@@ -31,19 +30,6 @@ impl<T> MemoryPool<T> {
         }
     }
 }
-
-/// Global memory pools for frequently used allocations
-pub static PROOF_BUFFER_POOL: Lazy<MemoryPool<Vec<u8>>> = Lazy::new(|| {
-    MemoryPool::new(50) // Pool up to 50 reusable buffers
-});
-
-pub static INPUT_BUFFER_POOL: Lazy<MemoryPool<Vec<u8>>> = Lazy::new(|| {
-    MemoryPool::new(100) // Pool up to 100 input buffers
-});
-
-pub static HASH_BUFFER_POOL: Lazy<MemoryPool<Vec<u8>>> = Lazy::new(|| {
-    MemoryPool::new(200) // Pool up to 200 hash buffers
-});
 
 /// Arena allocator for batch operations
 pub struct BatchArena {

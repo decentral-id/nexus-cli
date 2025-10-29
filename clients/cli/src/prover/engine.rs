@@ -1,7 +1,7 @@
-//! Core proving engine with zero-copy optimizations
+//! Core proving engine
 
 use crate::prover::verifier;
-use super::memory_pool::SerializationBuffer;
+
 use super::types::ProverError;
 use crate::analytics::track_likely_oom_error;
 use crate::environment::Environment;
@@ -13,7 +13,7 @@ use nexus_sdk::{
 use postcard::from_bytes;
 use std::env;
 use std::process::Stdio;
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use tokio::io::AsyncWriteExt;
 
 /// Core proving engine for ZK proof generation
 pub struct ProvingEngine;
@@ -47,7 +47,7 @@ impl ProvingEngine {
         Ok(proof)
     }
 
-    /// Generate proof for given inputs using zero-copy optimized subprocess communication
+    /// Generate proof for given inputs using the fibonacci program in a subprocess
     pub async fn prove_and_validate(
         inputs: &(u32, u32, u32),
         task: &Task,
@@ -65,18 +65,14 @@ impl ProvingEngine {
         // Apply maximum performance optimizations for high-throughput parallel processing
         Self::apply_performance_optimizations(&mut cmd);
 
-        // Use serialization buffer to minimize allocations
-        let mut serialization_buffer = SerializationBuffer::new();
-        {
-            let buffer = serialization_buffer.get_mut();
-            postcard::to_io(inputs, buffer).map_err(ProverError::Serialization)?;
-        }
+        // Serialize inputs as binary for faster transfer
+        let input_bytes = postcard::to_allocvec(inputs)?;
 
         let mut child = cmd.spawn()?;
 
-        // Zero-copy write: write directly to subprocess stdin
+        // Write binary inputs to subprocess stdin
         if let Some(mut stdin) = child.stdin.take() {
-            match stdin.write_all(serialization_buffer.as_slice()).await {
+            match stdin.write_all(&input_bytes).await {
                 Ok(()) => {
                     // Explicitly flush and close stdin to signal EOF
                     drop(stdin);
@@ -131,7 +127,7 @@ impl ProvingEngine {
             )));
         }
 
-        // Zero-copy deserialize: read directly from subprocess stdout
+        // Deserialize proof from subprocess stdout
         let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
             ProverError::Subprocess(format!(
                 "Failed to deserialize proof from subprocess stdout: {} (stdout len: {})",
@@ -146,64 +142,8 @@ impl ProvingEngine {
         Ok(proof)
     }
 
-    /// Generate proof with streaming I/O for minimal memory usage
-    pub async fn prove_and_validate_streaming(
-        inputs: &(u32, u32, u32),
-        task: &Task,
-        environment: &Environment,
-        client_id: &str,
-    ) -> Result<Proof, ProverError> {
-        // Spawn subprocess with optimized settings
-        let exe_path = env::current_exe()?;
-        let mut cmd = tokio::process::Command::new(exe_path);
-        cmd.arg("prove-fib-subprocess")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-
-        Self::apply_performance_optimizations(&mut cmd);
-
-        let mut child = cmd.spawn()?;
-
-        // Streaming input writing to minimize memory usage
-        if let Some(mut stdin) = child.stdin.take() {
-            // Write input data directly without intermediate buffer
-            let mut buffer = [0u8; 12]; // 3 * u32 = 12 bytes
-            buffer[0..4].copy_from_slice(&inputs.0.to_le_bytes());
-            buffer[4..8].copy_from_slice(&inputs.1.to_le_bytes());
-            buffer[8..12].copy_from_slice(&inputs.2.to_le_bytes());
-
-            if let Err(e) = stdin.write_all(&buffer).await {
-                if e.kind() != std::io::ErrorKind::BrokenPipe {
-                    return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
-                }
-            }
-            drop(stdin);
-        }
-
-        // Streaming output reading
-        let output = child.wait_with_output().await?;
-
-        if !output.status.success() {
-            return Err(ProverError::Subprocess(format!(
-                "Prover subprocess failed with status: {}",
-                output.status
-            )));
-        }
-
-        // Direct deserialization from subprocess output
-        let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
-            ProverError::Subprocess(format!(
-                "Failed to deserialize proof from subprocess stdout: {}",
-                e
-            ))
-        })?;
-
-        Ok(proof)
-    }
-
     /// Apply maximum performance optimizations to subprocess for high-throughput parallel processing
-    pub fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
+    fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
         // Standard aggressive memory optimizations for normal systems
         cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
         cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");

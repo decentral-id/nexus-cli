@@ -48,8 +48,7 @@ impl ProofSubmitter {
         let request_timer = RequestTimer::new(timer_config);
 
         // Create network client with more retries for critical submissions
-        let base_url = config.environment.orchestrator_url().to_string();
-        let network_client = NetworkClient::new(request_timer, proof_submission::MAX_RETRIES, base_url);
+        let network_client = NetworkClient::new(request_timer, proof_submission::MAX_RETRIES);
 
         Self {
             signing_key,
