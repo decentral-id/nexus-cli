@@ -65,27 +65,14 @@ impl ProvingEngine {
         // Apply maximum performance optimizations for high-throughput parallel processing
         Self::apply_performance_optimizations(&mut cmd);
 
-        // Serialize inputs as binary for faster transfer
-        let input_bytes = postcard::to_allocvec(inputs)?;
-
         let mut child = cmd.spawn()?;
 
-        // Write binary inputs to subprocess stdin
+        // Write binary inputs to subprocess stdin with zero-allocation
         if let Some(mut stdin) = child.stdin.take() {
-            match stdin.write_all(&input_bytes).await {
-                Ok(()) => {
-                    // Explicitly flush and close stdin to signal EOF
-                    drop(stdin);
-                }
-                Err(e) => {
-                    // If stdin write fails, the pipe might already be broken
-                    if e.kind() == std::io::ErrorKind::BrokenPipe {
-                        // Continue waiting for the child process, as it might still be running
-                    } else {
-                        return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
-                    }
-                }
+            if let Err(e) = Self::write_inputs_direct(&mut stdin, inputs).await {
+                return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
             }
+            // stdin is dropped here, which closes the pipe and signals EOF
         }
 
         let output = child.wait_with_output().await?;
@@ -142,8 +129,27 @@ impl ProvingEngine {
         Ok(proof)
     }
 
+    /// Write inputs directly to subprocess stdin with zero allocations
+    async fn write_inputs_direct(
+        stdin: &mut tokio::process::ChildStdin,
+        inputs: &(u32, u32, u32),
+    ) -> Result<(), ProverError> {
+        // Pre-allocated buffer on stack (ZERO allocation!)
+        let mut buffer = [0u8; 12];  // 3 x u32 = 12 bytes exactly
+
+        // Direct memory copy - no heap allocations!
+        buffer[0..4].copy_from_slice(&inputs.0.to_le_bytes());
+        buffer[4..8].copy_from_slice(&inputs.1.to_le_bytes());
+        buffer[8..12].copy_from_slice(&inputs.2.to_le_bytes());
+
+        stdin.write_all(&buffer).await?;
+        stdin.flush().await?;
+
+        Ok(())
+    }
+
     /// Apply maximum performance optimizations to subprocess for high-throughput parallel processing
-    fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
+    pub fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
         // Standard aggressive memory optimizations for normal systems
         cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
         cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
