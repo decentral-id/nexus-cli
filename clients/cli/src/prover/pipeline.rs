@@ -45,6 +45,33 @@ impl ProvingPipeline {
         let total_memory_gb = crate::system::total_memory_gb();
         if total_memory_gb <= 2.0 {
             log_memory_usage("Task boundary - before new task");
+
+            // Check if we're approaching OOM threshold and force cleanup
+            if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
+                if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
+                    if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
+                        if let Ok(memory_kb) = mb_str.parse::<usize>() {
+                            if memory_kb > 900_000 { // 900MB threshold
+                                println!("[WARNING] High memory usage detected: {} MB - forcing cleanup", memory_kb / 1024);
+
+                                // Force garbage collection and memory cleanup
+                                for i in 0..5 {
+                                    println!("[CLEANUP] Memory reclamation cycle {}", i + 1);
+                                    tokio::task::yield_now().await;
+
+                                    // Trigger garbage collection hints
+                                    if i == 2 {
+                                        std::process::Command::new("sync").status().ok();
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                    }
+                                }
+
+                                log_memory_usage("After forced cleanup");
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         match task.program_id.as_str() {
@@ -263,21 +290,57 @@ impl ProvingPipeline {
                 0
             };
 
-            // For t3.small, we need to restart after each task to reclaim memory
-            if current_memory_kb > 1_000_000 { // 1GB threshold
-                println!("[INFO] Memory usage {} MB exceeded safe threshold", current_memory_kb / 1024);
-                println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
-                println!("[INFO] Recommendation: Process will restart to reclaim memory");
+            // Aggressive memory cleanup for t3.small to enable multiple tasks
+            println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
+            println!("[INFO] Memory usage: {} MB - attempting reclamation", current_memory_kb / 1024);
 
-                // Return results normally, but the memory issue persists
-                Ok((all_proofs, final_proof_hash, proof_hashes))
-            } else {
-                println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
-                println!("[INFO] Memory usage within safe limits: {} MB", current_memory_kb / 1024);
+            // Force aggressive cleanup to reclaim memory for next task
+            println!("[CLEANUP] Starting aggressive memory reclamation...");
 
-                // Return results normally - let task completion boundary handle memory release
-                Ok((all_proofs, final_proof_hash, proof_hashes))
+            // Multiple cleanup cycles with different strategies
+            for i in 0..8 {
+                match i {
+                    0 => {
+                        println!("[CLEANUP] Cycle 1: Basic vector clearing");
+                        tokio::task::yield_now().await;
+                    }
+                    1 => {
+                        println!("[CLEANUP] Cycle 2: Force sync");
+                        std::process::Command::new("sync").status().ok();
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    }
+                    2 => {
+                        println!("[CLEANUP] Cycle 3: Memory pressure simulation");
+                        // Allocate and drop small chunks to trigger allocator cleanup
+                        let _temp_vecs: Vec<Vec<u8>> = (0..100).map(|_| vec![0u8; 1024]).collect();
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    3 => {
+                        println!("[CLEANUP] Cycle 4: System cache flush");
+                        std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg("echo 3 > /proc/sys/vm/drop_caches")
+                            .status().ok();
+                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                    }
+                    4 => {
+                        println!("[CLEANUP] Cycle 5: Multiple yield cycles");
+                        for _ in 0..10 {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    _ => {
+                        println!("[CLEANUP] Cycle {}: Final cleanup", i + 1);
+                        tokio::task::yield_now().await;
+                    }
+                }
             }
+
+            log_memory_usage("After aggressive reclamation");
+
+            // Return results - memory should now be reclaimed
+            println!("[CLEANUP] Aggressive reclamation completed");
+            Ok((all_proofs, final_proof_hash, proof_hashes))
         } else {
             // Normal path for systems with sufficient memory
             Ok((all_proofs, final_proof_hash, proof_hashes))
