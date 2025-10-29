@@ -38,15 +38,21 @@ impl ProvingEngine {
         let exe_path = env::current_exe()?;
         let mut cmd = tokio::process::Command::new(exe_path);
         cmd.arg("prove-fib-subprocess")
-            .arg("--inputs")
-            .arg(serde_json::to_string(inputs)?)  // Use JSON like original
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
         // Apply performance optimizations
         Self::apply_performance_optimizations(&mut cmd);
 
-        let child = cmd.spawn()?;
+        let mut child = cmd.spawn()?;
+
+        // Write binary inputs to subprocess stdin (exactly how main.rs expects)
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = Self::write_inputs_direct(&mut stdin, inputs).await {
+                return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
+            }
+        }
 
         let output = child.wait_with_output().await?;
 
