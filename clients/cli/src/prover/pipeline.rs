@@ -144,8 +144,8 @@ impl ProvingPipeline {
             let inputs = InputParser::parse_triple_input(input_data)?;
             println!("[DEBUG] Parsed inputs: {:?}", inputs);
 
-            // Test: Use the non-subprocess version to isolate the issue
-            let proof = super::engine::ProvingEngine::prove_fib_subprocess(&inputs)?;
+            // Test: Use the original working subprocess version
+            let proof = super::engine::ProvingEngine::prove_and_validate(&inputs, task, environment, client_id).await?;
             println!("[DEBUG] Generated proof successfully, proof size: {} bytes",
                 std::mem::size_of_val(&proof));
 

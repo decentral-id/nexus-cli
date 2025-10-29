@@ -32,9 +32,9 @@ impl ProvingEngine {
         })
     }
 
-    /// Generate proof using true subprocess isolation (no validation/submission)
+    /// Generate proof using true subprocess isolation (no validation/submission) - DISABLED TO TEST ORIGINAL
     #[allow(dead_code)]
-    pub async fn prove_fib_subprocess_isolated(inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
+    /* pub async fn prove_fib_subprocess_isolated(inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
         // Spawn a subprocess for proof generation to isolate memory usage
         let exe_path = env::current_exe()?;
         let mut cmd = tokio::process::Command::new(exe_path);
@@ -87,6 +87,7 @@ impl ProvingEngine {
 
         Ok(proof)
     }
+    }*/
 
     /// Subprocess entrypoint: generate proof without verification (same process)
     pub fn prove_fib_subprocess(inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
