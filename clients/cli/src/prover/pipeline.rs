@@ -63,21 +63,32 @@ impl ProvingPipeline {
 
                             // Additional check: ensure we have enough headroom for the task
                             let all_inputs = task.all_inputs();
-                            let estimated_memory_per_proof_mb = 150; // Conservative estimate
-                            let estimated_total_memory_mb = memory_mb + (all_inputs.len() * estimated_memory_per_proof_mb);
+                            // With true subprocess isolation, we only need to ensure ONE proof can fit at a time
+                            // Each proof runs in its own process and memory is reclaimed when the process exits
+                            let estimated_memory_per_proof_mb = 400; // Conservative estimate for single proof (based on Stwo prover requirements)
+                            let estimated_peak_memory_mb = memory_mb + estimated_memory_per_proof_mb;
 
-                            if estimated_total_memory_mb > (total_memory_gb * 1024.0 * 0.85) as usize { // Use 85% of total memory as safety limit
+                            // Use less restrictive limit - 95% of total memory for single proof
+                            if estimated_peak_memory_mb > (total_memory_gb * 1024.0 * 0.95) as usize {
                                 return Err(ProverError::Stwo(format!(
-                                    "Insufficient memory for task: estimated {} MB needed, only {} MB available on {} GB system with {} inputs",
-                                    estimated_total_memory_mb,
+                                    "Insufficient memory for single proof: estimated {} MB needed, only {} MB available on {} GB system. Consider using larger instance.",
+                                    estimated_peak_memory_mb,
                                     (total_memory_gb * 1024.0) as usize,
-                                    total_memory_gb,
-                                    all_inputs.len()
+                                    total_memory_gb
                                 )));
                             }
 
-                            println!("[MEMORY] Pre-task check passed: {} MB used, {} inputs estimated to require ~{} MB additional",
-                                memory_mb, all_inputs.len(), all_inputs.len() * estimated_memory_per_proof_mb);
+                            // Show system capabilities on first task
+                            static mut CAPABILITIES_SHOWN: bool = false;
+                            if unsafe { !CAPABILITIES_SHOWN } {
+                                println!("[SYSTEM] Sequential processing mode: can handle any number of inputs, one proof at a time");
+                                println!("[SYSTEM] Memory per proof: ~{} MB, system limit: {} MB",
+                                    estimated_memory_per_proof_mb, (total_memory_gb * 1024.0 * 0.95) as usize);
+                                unsafe { CAPABILITIES_SHOWN = true; }
+                            }
+
+                            println!("[MEMORY] Pre-task check passed: {} MB used, {} inputs will be processed sequentially (estimated ~{} MB per proof)",
+                                memory_mb, all_inputs.len(), estimated_memory_per_proof_mb);
                         }
                     }
                 }
