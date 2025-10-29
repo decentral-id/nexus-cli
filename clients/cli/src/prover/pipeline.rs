@@ -40,15 +40,53 @@ impl ProvingPipeline {
         client_id: &str,
         num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
-        // Simple monitoring for low-memory systems
         let total_memory_gb = crate::system::total_memory_gb();
+
+        // CRITICAL: Enhanced pre-task memory checks for low-memory systems
         if total_memory_gb <= 2.0 {
             log_memory_usage("Task boundary - before new task");
+
+            // Check current memory usage before starting
+            if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
+                if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
+                    if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
+                        if let Ok(memory_kb) = mb_str.parse::<usize>() {
+                            let memory_mb = memory_kb / 1024;
+                            let safety_threshold_mb = if total_memory_gb <= 1.5 { 800 } else { 1200 }; // Stricter for very low memory
+
+                            if memory_kb > safety_threshold_mb * 1024 {
+                                return Err(ProverError::Stwo(format!(
+                                    "Memory too high: {} MB (threshold: {} MB) - refusing task to prevent OOM kill on {} GB system",
+                                    memory_mb, safety_threshold_mb, total_memory_gb
+                                )));
+                            }
+
+                            // Additional check: ensure we have enough headroom for the task
+                            let all_inputs = task.all_inputs();
+                            let estimated_memory_per_proof_mb = 150; // Conservative estimate
+                            let estimated_total_memory_mb = memory_mb + (all_inputs.len() * estimated_memory_per_proof_mb);
+
+                            if estimated_total_memory_mb > (total_memory_gb * 1024.0 * 0.85) as usize { // Use 85% of total memory as safety limit
+                                return Err(ProverError::Stwo(format!(
+                                    "Insufficient memory for task: estimated {} MB needed, only {} MB available on {} GB system with {} inputs",
+                                    estimated_total_memory_mb,
+                                    (total_memory_gb * 1024.0) as usize,
+                                    total_memory_gb,
+                                    all_inputs.len()
+                                )));
+                            }
+
+                            println!("[MEMORY] Pre-task check passed: {} MB used, {} inputs estimated to require ~{} MB additional",
+                                memory_mb, all_inputs.len(), all_inputs.len() * estimated_memory_per_proof_mb);
+                        }
+                    }
+                }
+            }
         }
 
         match task.program_id.as_str() {
             "fib_input_initial" => {
-                Self::prove_fib_task_optimized(task, environment, client_id, num_workers).await
+                Self::prove_fib_task_fully_isolated(task, environment, client_id, num_workers).await
             }
             _ => Err(ProverError::MalformedTask(format!(
                 "Unsupported program ID: {}",
@@ -57,8 +95,8 @@ impl ProvingPipeline {
         }
     }
 
-    /// Process fibonacci proving task with ultra-fast persistent process optimization
-    async fn prove_fib_task_optimized(
+    /// Process fibonacci proving task with complete subprocess isolation for low-memory systems
+    async fn prove_fib_task_fully_isolated(
         task: &Task,
         _environment: &Environment,
         _client_id: &str,
@@ -72,44 +110,87 @@ impl ProvingPipeline {
             ));
         }
 
-        // CRITICAL: Safety check for low-memory systems
         let total_memory_gb = crate::system::total_memory_gb();
-        if total_memory_gb <= 2.0 && all_inputs.len() > 15 {
-            println!("[WARNING] Task has {} inputs - may be too many for 2GB system. Consider upgrading to t3.medium (4GB).", all_inputs.len());
+
+        // CRITICAL: For low-memory systems, use sequential processing with immediate memory cleanup
+        if total_memory_gb <= 2.0 {
+            println!("[CRITICAL] Low-memory system detected - using sequential processing with immediate cleanup");
+            log_memory_usage("Before sequential processing");
+
+            let mut all_proofs = Vec::new();
+            let mut proof_hashes = Vec::new();
+
+            // Process inputs one by one to minimize memory usage
+            for (index, input_data) in all_inputs.iter().enumerate() {
+                println!("[INFO] Processing proof {}/{} in low-memory mode", index + 1, all_inputs.len());
+
+                // Parse input
+                let inputs = InputParser::parse_triple_input(input_data)?;
+
+                // Generate proof using isolated subprocess (each proof gets its own process)
+                let proof = Self::prove_with_isolated_process(&inputs).await?;
+
+                // Generate hash
+                let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
+
+                all_proofs.push(proof);
+                proof_hashes.push(proof_hash);
+
+                // Log memory usage after each proof
+                if index == 0 || index % 5 == 0 {
+                    log_memory_usage(&format!("After proof {}", index + 1));
+                }
+            }
+
+            let final_proof_hash = Task::combine_proof_hashes(&proof_hashes);
+
+            // Clear thread-local buffers to prevent accumulation between tasks
+            HASH_BUFFER.with(|buffer_cell| {
+                let mut buffer = buffer_cell.borrow_mut();
+                buffer.fill(0);
+            });
+
+            log_memory_usage("Sequential processing completed");
+            println!("[INFO] Low-memory processing completed: {} proofs processed", all_proofs.len());
+
+            return Ok((all_proofs, final_proof_hash, proof_hashes));
         }
 
-        // Memory-optimized batch size for low-memory systems
-        let total_memory_gb = crate::system::total_memory_gb();
-        let (batch_size, use_adaptive_batching) = if total_memory_gb <= 2.0 {
-            // CRITICAL: Force single-proof processing for t3.small to prevent memory spikes
-            if all_inputs.len() > 1 {
-                println!("[CRITICAL] Low-memory system detected with {} inputs - forcing single-proof processing", all_inputs.len());
-            }
-            (1, false) // Always batch size 1 - NEVER parallelize on t3.small
-        } else {
-            // Use adaptive batching only for systems with more memory
+        // Normal processing for systems with sufficient memory (fallback)
+        println!("[INFO] Sufficient memory detected - using normal processing");
+        Self::prove_fib_task_normal(task, _environment, _client_id, _num_workers).await
+    }
+
+    /// Normal processing for systems with sufficient memory
+    async fn prove_fib_task_normal(
+        task: &Task,
+        _environment: &Environment,
+        _client_id: &str,
+        _num_workers: usize,
+    ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
+        let all_inputs = task.all_inputs();
+
+        if all_inputs.is_empty() {
+            return Err(ProverError::MalformedTask(
+                "No inputs provided for task".to_string(),
+            ));
+        }
+
+        let _total_memory_gb = crate::system::total_memory_gb();
+
+        // Use adaptive batching only for systems with more memory
+        let (batch_size, use_adaptive_batching) = if super::adaptive_batch::should_use_global_batcher() {
             let batcher = get_global_batcher();
             (batcher.get_memory_adjusted_batch_size(all_inputs.len()).await, true)
-        };
-
-        // Pre-allocate with smaller capacity for memory-constrained systems
-        let initial_capacity = if total_memory_gb <= 2.0 {
-            std::cmp::min(all_inputs.len(), 10) // Limit initial allocation
         } else {
-            all_inputs.len()
+            // For low-memory systems, use simple fixed batching
+            println!("[INFO] Using fixed batch size for low-memory system");
+            (1, false) // Always use batch size 1 for low-memory systems
         };
 
-        let mut all_proofs = Vec::with_capacity(initial_capacity);
-        let mut proof_hashes = Vec::with_capacity(initial_capacity);
+        let mut all_proofs = Vec::with_capacity(all_inputs.len());
+        let mut proof_hashes = Vec::with_capacity(all_inputs.len());
         let verification_failures = Vec::new();
-
-        // Force single-threaded processing for very low memory systems
-        if total_memory_gb <= 2.0 {
-            println!("[INFO] Low-memory mode detected: Using single-threaded processing for stability");
-            log_memory_usage("Task start");
-        }
-
-        // Process all inputs using optimized direct approach
 
         // Process inputs in batches with performance tracking
         for batch_start in (0..all_inputs.len()).step_by(batch_size) {
@@ -117,16 +198,15 @@ impl ProvingPipeline {
             let batch_inputs = &all_inputs[batch_start..batch_end];
             let batch_start_time = Instant::now();
 
-            // Process current batch with memory-optimized approach
-            let results = if total_memory_gb <= 2.0 {
-                // Single-threaded processing for low-memory systems
-                let mut results = Vec::new();
-                for (local_index, input_data) in batch_inputs.iter().enumerate() {
+            // Multi-threaded processing for systems with more memory
+            let handles: Vec<_> = batch_inputs
+                .iter()
+                .enumerate()
+                .map(|(local_index, input_data)| {
                     let input_data = input_data.clone();
                     let global_index = batch_start + local_index;
 
-                    // Process sequentially to minimize memory usage
-                    let result = async move {
+                    tokio::spawn(async move {
                         // Step 1: Parse and validate input
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
@@ -137,46 +217,15 @@ impl ProvingPipeline {
                         let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
 
                         Ok((proof, proof_hash, global_index))
-                    }.await;
-
-                    results.push(Ok(result));
-
-                    // Simple monitoring - no complex cleanup needed with subprocess isolation
-                    if total_memory_gb <= 2.0 && local_index == 0 {
-                        log_memory_usage(&format!("After proof {}", local_index + 1));
-                    }
-                }
-                results
-            } else {
-                // Multi-threaded processing for systems with more memory
-                let handles: Vec<_> = batch_inputs
-                    .iter()
-                    .enumerate()
-                    .map(|(local_index, input_data)| {
-                        let input_data = input_data.clone();
-                        let global_index = batch_start + local_index;
-
-                        tokio::spawn(async move {
-                            // Step 1: Parse and validate input
-                            let inputs = InputParser::parse_triple_input(&input_data)?;
-
-                            // Step 2: Generate proof using isolated subprocess
-                            let proof = Self::prove_with_isolated_process(&inputs).await?;
-
-                            // Step 3: Generate proof hash with ultra-optimized thread-local buffer
-                            let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
-
-                            Ok((proof, proof_hash, global_index))
-                        })
                     })
-                    .collect();
+                })
+                .collect();
 
-                // Wait for batch completion
-                join_all(handles).await
-            };
+            // Wait for batch completion
+            let results = join_all(handles).await;
 
-            // Track batch performance for adaptive batching (only for systems with sufficient memory)
-            if use_adaptive_batching {
+            // Track batch performance for adaptive batching (only if not low-memory system)
+            if use_adaptive_batching && super::adaptive_batch::should_use_global_batcher() {
                 let batch_duration = batch_start_time.elapsed();
                 let proofs_in_batch = results.len();
                 let batcher = get_global_batcher();
@@ -193,10 +242,8 @@ impl ProvingPipeline {
                                 proof_hashes.push(proof_hash);
                             }
                             Err(prover_error) => {
-                                // Handle ProverError from proof generation
                                 match prover_error {
                                     ProverError::Stwo(_) | ProverError::GuestProgram(_) => {
-                                        // For now, just log the error and continue
                                         eprintln!("Proof generation error: {}", prover_error);
                                     }
                                     _ => {
@@ -208,7 +255,6 @@ impl ProvingPipeline {
                         }
                     }
                     Err(join_error) => {
-                        // Handle JoinError from task spawning
                         match join_error.try_into_panic() {
                             Ok(panic_payload) => {
                                 let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
@@ -229,8 +275,7 @@ impl ProvingPipeline {
                     }
                 }
             }
-
-            }
+        }
 
         // Fire-and-forget analytics with minimal overhead
         if !verification_failures.is_empty() {
@@ -247,13 +292,16 @@ impl ProvingPipeline {
             });
         }
 
-        // Use optimized reference for hash combination
-        let final_proof_hash = Self::combine_proof_hashes(&task, &proof_hashes);
+        // Use default hash combination for isolated subprocess
+        let final_proof_hash = Task::combine_proof_hashes(&proof_hashes);
 
-        // Simple return - subprocess isolation handles memory automatically
-        if total_memory_gb <= 2.0 {
-            log_memory_usage("Task completed");
-            println!("[INFO] Low-memory processing completed: {} proofs processed (subprocess isolation active)", all_inputs.len());
+        // Clear thread-local buffers for low-memory systems to prevent accumulation
+        if crate::system::total_memory_gb() <= 2.0 {
+            HASH_BUFFER.with(|buffer_cell| {
+                let mut buffer = buffer_cell.borrow_mut();
+                buffer.fill(0);
+            });
+            log_memory_usage("After cleanup - thread-local buffers cleared");
         }
 
         Ok((all_proofs, final_proof_hash, proof_hashes))

@@ -269,3 +269,15 @@ pub static GLOBAL_ADAPTIVE_BATCHER: std::sync::LazyLock<AdaptiveBatcher> = std::
 pub fn get_global_batcher() -> &'static AdaptiveBatcher {
     &GLOBAL_ADAPTIVE_BATCHER
 }
+
+/// Reset the global adaptive batcher state (for memory cleanup)
+pub fn reset_global_batcher() {
+    // Note: This is a workaround for the fact that LazyLock doesn't support resetting
+    // In a production environment, we'd implement a proper reset mechanism
+    println!("[WARNING] Cannot reset global batcher - LazyLock doesn't support reset. Consider avoiding global state for low-memory systems.");
+}
+
+/// Check if we should avoid global state for memory-constrained systems
+pub fn should_use_global_batcher() -> bool {
+    crate::system::total_memory_gb() > 2.0
+}
