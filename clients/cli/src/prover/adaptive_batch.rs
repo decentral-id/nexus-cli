@@ -205,9 +205,7 @@ impl AdaptiveBatcher {
             state.current_batch_size = new_batch_size;
             state.last_adjustment = Instant::now();
 
-            eprintln!("Adaptive batcher: Adjusted batch size from {} to {} (performance ratio: {:.2})",
-                batch_size, new_batch_size, performance_ratio);
-        }
+                    }
 
         // Track consecutive good/bad batches
         if performance_ratio <= 1.2 {
@@ -222,11 +220,9 @@ impl AdaptiveBatcher {
         if state.consecutive_bad_batches >= 3 {
             state.current_batch_size = (state.current_batch_size / 2).max(state.min_batch_size);
             state.consecutive_bad_batches = 0;
-            eprintln!("Adaptive batcher: Aggressive reduction due to consecutive poor performance");
         } else if state.consecutive_good_batches >= 5 {
             state.current_batch_size = (state.current_batch_size * 3 / 2).min(state.max_batch_size);
             state.consecutive_good_batches = 0;
-            eprintln!("Adaptive batcher: Gradual increase due to consistent good performance");
         }
     }
 

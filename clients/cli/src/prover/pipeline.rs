@@ -62,12 +62,10 @@ impl ProvingPipeline {
 
         // Get adaptive batch size based on performance and system resources
         let batcher = get_global_batcher();
-        let base_batch_size = batcher.get_optimal_batch_size().await;
+        let _base_batch_size = batcher.get_optimal_batch_size().await;
         let batch_size = batcher.get_memory_adjusted_batch_size(all_inputs.len()).await;
 
-        eprintln!("Adaptive batcher: Using batch size {} (base: {}, inputs: {})",
-            batch_size, base_batch_size, all_inputs.len());
-
+        
         let mut all_proofs = Vec::with_capacity(all_inputs.len());
         let mut proof_hashes = Vec::with_capacity(all_inputs.len());
         let verification_failures = Vec::new();
