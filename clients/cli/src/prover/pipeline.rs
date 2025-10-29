@@ -240,13 +240,15 @@ impl ProvingPipeline {
         // Use optimized reference for hash combination
         let final_proof_hash = Self::combine_proof_hashes(&task, &proof_hashes);
 
-        // Memory cleanup for low-memory systems
+        // Return results first, then cleanup memory for low-memory systems
+        let result = (all_proofs, final_proof_hash, proof_hashes);
+
         if total_memory_gb <= 2.0 {
             log_memory_usage("Before cleanup");
 
-            // Explicit cleanup to help OOM situation
-            all_proofs.clear();
-            proof_hashes.clear();
+            // Explicit cleanup after result is captured
+            result.0.clear();  // all_proofs
+            result.2.clear();  // proof_hashes
 
             // Force multiple garbage collection cycles
             for _ in 0..3 {
@@ -257,7 +259,7 @@ impl ProvingPipeline {
             println!("[INFO] Low-memory cleanup completed: {} proofs processed", all_inputs.len());
         }
 
-        Ok((all_proofs, final_proof_hash, proof_hashes))
+        Ok(result)
     }
 
     /// Generate proof using optimized engine approach
