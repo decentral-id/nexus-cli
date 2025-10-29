@@ -33,6 +33,7 @@ impl ProvingEngine {
     }
 
     /// Generate proof using true subprocess isolation (no validation/submission)
+    #[allow(dead_code)]
     pub async fn prove_fib_subprocess_isolated(inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
         // Spawn a subprocess for proof generation to isolate memory usage
         let exe_path = env::current_exe()?;
@@ -56,13 +57,7 @@ impl ProvingEngine {
 
         let output = child.wait_with_output().await?;
 
-        // Debug: Log subprocess execution details
-        println!("[DEBUG] Isolated subprocess exit status: {}", output.status);
-        println!("[DEBUG] Isolated subprocess stdout length: {} bytes", output.stdout.len());
-        if !output.stderr.is_empty() {
-            println!("[DEBUG] Isolated subprocess stderr: {}", String::from_utf8_lossy(&output.stderr));
-        }
-
+        
         if !output.status.success() {
             if let Some(code) = output.status.code() {
                 if code == crate::consts::cli_consts::SUBPROCESS_SUSPECTED_OOM_CODE {

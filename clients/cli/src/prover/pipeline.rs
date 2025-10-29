@@ -2,15 +2,12 @@
 
 #![allow(dead_code)]
 
-use std::time::Instant;
 use std::cell::RefCell;
 use super::input::InputParser;
-use super::adaptive_batch::get_global_batcher;
+use super::engine::ProvingEngine;
 use super::types::ProverError;
-use crate::analytics::track_verification_failed;
 use crate::environment::Environment;
 use crate::task::Task;
-use futures::future::join_all;
 use nexus_sdk::stwo::seq::Proof;
 use sha3::{Digest, Keccak256};
 use hex;
@@ -31,6 +28,24 @@ fn log_memory_usage(context: &str) {
 
 /// Orchestrates the complete proving pipeline with optimizations
 pub struct ProvingPipeline;
+
+/// Error collection for batch processing
+#[allow(dead_code)]
+#[derive(Debug)]
+struct VerificationFailure {
+    task: Task,
+    error: String,
+    environment: Environment,
+    client_id: String,
+}
+
+/// Result of proof generation with hash
+#[allow(dead_code)]
+struct ProofResult {
+    proof: Proof,
+    hash: String,
+    index: usize,
+}
 
 impl ProvingPipeline {
     /// Execute authenticated proving for a task
@@ -116,227 +131,42 @@ impl ProvingPipeline {
         }
     }
 
-    /// Process fibonacci proving task with complete subprocess isolation for low-memory systems
+    /// Process fibonacci proving task with multiple inputs (original simple implementation)
     async fn prove_fib_task_fully_isolated(
         task: &Task,
-        _environment: &Environment,
-        _client_id: &str,
+        environment: &Environment,
+        client_id: &str,
         _num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
         let all_inputs = task.all_inputs();
-
         if all_inputs.is_empty() {
-            return Err(ProverError::MalformedTask(
-                "No inputs provided for task".to_string(),
-            ));
+            return Err(ProverError::MalformedTask("No inputs provided for task".to_string()));
         }
-
-        let total_memory_gb = crate::system::total_memory_gb();
-
-        // CRITICAL: For low-memory systems, use sequential processing with immediate memory cleanup
-        if total_memory_gb <= 2.0 {
-            println!("[CRITICAL] Low-memory system detected - using sequential processing with immediate cleanup");
-            log_memory_usage("Before sequential processing");
-
-            let mut all_proofs = Vec::new();
-            let mut proof_hashes = Vec::new();
-
-            // Process inputs one by one to minimize memory usage with aggressive cleanup
-            for (index, input_data) in all_inputs.iter().enumerate() {
-                println!("[INFO] Processing proof {}/{} in low-memory mode", index + 1, all_inputs.len());
-
-                // NOTE: Don't clear collections before proofs - we need to maintain all proofs for submission
-                // The subprocess isolation should handle memory cleanup
-
-                // Parse input
-                let inputs = InputParser::parse_triple_input(input_data)?;
-
-                // Test: Use the original working function temporarily to debug
-                let proof = super::engine::ProvingEngine::prove_and_validate(&inputs, task, _environment, _client_id).await?;
-
-                // Generate hash
-                let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
-
-                // Store results
-                all_proofs.push(proof);
-                proof_hashes.push(proof_hash);
-
-                // NOTE: Don't clear proofs array during processing - it causes submission count mismatch
-                // The actual subprocess isolation should handle memory cleanup properly now
-
-                // Log memory usage after each proof
-                if index == 0 || index % 3 == 0 {
-                    log_memory_usage(&format!("After proof {}", index + 1));
-                }
-            }
-
-            let final_proof_hash = Task::combine_proof_hashes(&proof_hashes);
-
-            // Clear thread-local buffers to prevent accumulation between tasks
-            HASH_BUFFER.with(|buffer_cell| {
-                let mut buffer = buffer_cell.borrow_mut();
-                buffer.fill(0);
-            });
-
-            log_memory_usage("Sequential processing completed");
-            println!("[INFO] Low-memory processing completed: {} proofs processed", all_proofs.len());
-
-            return Ok((all_proofs, final_proof_hash, proof_hashes));
+        let mut all_proofs = Vec::new();
+        let mut proof_hashes = Vec::new();
+        for (_input_index, input_data) in all_inputs.iter().enumerate() {
+            let inputs = InputParser::parse_triple_input(input_data)?;
+            let proof = ProvingEngine::prove_and_validate(&inputs, task, environment, client_id).await?;
+            let proof_hash = Self::generate_proof_hash(&proof);
+            all_proofs.push(proof);
+            proof_hashes.push(proof_hash);
         }
-
-        // Normal processing for systems with sufficient memory (fallback)
-        println!("[INFO] Sufficient memory detected - using normal processing");
-        Self::prove_fib_task_normal(task, _environment, _client_id, _num_workers).await
-    }
-
-    /// Normal processing for systems with sufficient memory
-    async fn prove_fib_task_normal(
-        task: &Task,
-        _environment: &Environment,
-        _client_id: &str,
-        _num_workers: usize,
-    ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
-        let all_inputs = task.all_inputs();
-
-        if all_inputs.is_empty() {
-            return Err(ProverError::MalformedTask(
-                "No inputs provided for task".to_string(),
-            ));
-        }
-
-        let _total_memory_gb = crate::system::total_memory_gb();
-
-        // Use adaptive batching only for systems with more memory
-        let (batch_size, use_adaptive_batching) = if super::adaptive_batch::should_use_global_batcher() {
-            let batcher = get_global_batcher();
-            (batcher.get_memory_adjusted_batch_size(all_inputs.len()).await, true)
-        } else {
-            // For low-memory systems, use simple fixed batching
-            println!("[INFO] Using fixed batch size for low-memory system");
-            (1, false) // Always use batch size 1 for low-memory systems
-        };
-
-        let mut all_proofs = Vec::with_capacity(all_inputs.len());
-        let mut proof_hashes = Vec::with_capacity(all_inputs.len());
-        let verification_failures = Vec::new();
-
-        // Process inputs in batches with performance tracking
-        for batch_start in (0..all_inputs.len()).step_by(batch_size) {
-            let batch_end = std::cmp::min(batch_start + batch_size, all_inputs.len());
-            let batch_inputs = &all_inputs[batch_start..batch_end];
-            let batch_start_time = Instant::now();
-
-            // Multi-threaded processing for systems with more memory
-            let handles: Vec<_> = batch_inputs
-                .iter()
-                .enumerate()
-                .map(|(local_index, input_data)| {
-                    let input_data = input_data.clone();
-                    let global_index = batch_start + local_index;
-
-                    tokio::spawn(async move {
-                        // Step 1: Parse and validate input
-                        let inputs = InputParser::parse_triple_input(&input_data)?;
-
-                        // Step 2: Generate proof using isolated subprocess
-                        let proof = super::engine::ProvingEngine::prove_fib_subprocess_isolated(&inputs).await?;
-
-                        // Step 3: Generate proof hash with ultra-optimized thread-local buffer
-                        let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
-
-                        Ok((proof, proof_hash, global_index))
-                    })
-                })
-                .collect();
-
-            // Wait for batch completion
-            let results = join_all(handles).await;
-
-            // Track batch performance for adaptive batching (only if not low-memory system)
-            if use_adaptive_batching && super::adaptive_batch::should_use_global_batcher() {
-                let batch_duration = batch_start_time.elapsed();
-                let proofs_in_batch = results.len();
-                let batcher = get_global_batcher();
-                batcher.record_batch_performance(batch_size, batch_duration, proofs_in_batch).await;
-            }
-
-            // Process results
-            for result in results {
-                match result {
-                    Ok(task_result) => {
-                        match task_result {
-                            Ok((proof, proof_hash, _global_index)) => {
-                                all_proofs.push(proof);
-                                proof_hashes.push(proof_hash);
-                            }
-                            Err(prover_error) => {
-                                match prover_error {
-                                    ProverError::Stwo(_) | ProverError::GuestProgram(_) => {
-                                        eprintln!("Proof generation error: {}", prover_error);
-                                    }
-                                    _ => {
-                                        eprintln!("Critical error in proof generation: {}", prover_error);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(join_error) => {
-                        match join_error.try_into_panic() {
-                            Ok(panic_payload) => {
-                                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
-                                    s.clone()
-                                } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                                    s.to_string()
-                                } else {
-                                    "Unknown panic".to_string()
-                                };
-                                eprintln!("Task panicked: {}", panic_msg);
-                                break;
-                            }
-                            Err(_) => {
-                                eprintln!("Task was cancelled or failed to join");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fire-and-forget analytics with minimal overhead
-        if !verification_failures.is_empty() {
-            let batch_failures = verification_failures.clone();
-            tokio::spawn(async move {
-                for (task, error_msg, env, client) in batch_failures {
-                    track_verification_failed(
-                        task,
-                        error_msg,
-                        env,
-                        client,
-                    ).await;
-                }
-            });
-        }
-
-        // Use default hash combination for isolated subprocess
-        let final_proof_hash = Task::combine_proof_hashes(&proof_hashes);
-
-        // Clear thread-local buffers for low-memory systems to prevent accumulation
-        if crate::system::total_memory_gb() <= 2.0 {
-            HASH_BUFFER.with(|buffer_cell| {
-                let mut buffer = buffer_cell.borrow_mut();
-                buffer.fill(0);
-            });
-            log_memory_usage("After cleanup - thread-local buffers cleared");
-        }
-
+        let final_proof_hash = Self::combine_proof_hashes(task, &proof_hashes);
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
 
     
+    
+    /// Generate hash for a proof (original implementation)
+    fn generate_proof_hash(proof: &Proof) -> String {
+        let mut hasher = Keccak256::new();
+        postcard::to_io(proof, &mut hasher).unwrap();
+        let hash = hasher.finalize();
+        hex::encode(hash)
+    }
+
     /// Generate hash for a proof with ultra-optimized thread-local buffer
+    #[allow(dead_code)]
     fn generate_proof_hash_ultra_optimized(proof: &Proof) -> Result<String, ProverError> {
         HASH_BUFFER.with(|buffer_cell| {
             let mut buffer = buffer_cell.borrow_mut();
@@ -366,39 +196,4 @@ impl ProvingPipeline {
             }
         }
     }
-
-    /// Collect all verification failures and report them
-    async fn report_verification_failures(
-        verification_failures: Vec<(Task, String, Environment, String)>,
-    ) {
-        if !verification_failures.is_empty() {
-            // Fire-and-forget analytics with minimal overhead
-            tokio::spawn(async move {
-                for (task, error_msg, env, client) in verification_failures {
-                    track_verification_failed(
-                        task,
-                        error_msg,
-                        env,
-                        client,
-                    ).await;
-                }
-            });
-        }
-    }
-}
-
-/// Error collection for batch processing
-#[derive(Debug)]
-struct VerificationFailure {
-    task: Task,
-    error: String,
-    environment: Environment,
-    client_id: String,
-}
-
-/// Result of proof generation with hash
-struct ProofResult {
-    proof: Proof,
-    hash: String,
-    index: usize,
 }

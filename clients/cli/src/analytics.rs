@@ -226,6 +226,7 @@ pub async fn track_got_task(task: crate::task::Task, environment: Environment, c
 }
 
 /// Track analytics for proof verification failure (non-blocking)
+#[allow(dead_code)]
 pub async fn track_verification_failed(
     task: crate::task::Task,
     error: String,
