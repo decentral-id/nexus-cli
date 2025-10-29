@@ -119,7 +119,7 @@ impl ProvingEngine {
         cmd.arg("prove-fib-subprocess")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
 
         // Apply maximum performance optimizations for high-throughput parallel processing
         Self::apply_performance_optimizations(&mut cmd);
@@ -127,6 +127,7 @@ impl ProvingEngine {
         let mut child = cmd.spawn()?;
 
         // Write binary inputs to subprocess stdin with zero-allocation
+        eprintln!("[MAIN DEBUG] Writing inputs to subprocess stdin: {:?}", inputs);
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = Self::write_inputs_direct(&mut stdin, inputs).await {
                 return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
@@ -138,7 +139,9 @@ impl ProvingEngine {
 
         // Debug: Print subprocess stderr to see what happened
         if !output.stderr.is_empty() {
-            eprintln!("[MAIN DEBUG] Subprocess stderr: {}", String::from_utf8_lossy(&output.stderr));
+            eprintln!("[MAIN DEBUG] Subprocess stderr ({} bytes): {}", output.stderr.len(), String::from_utf8_lossy(&output.stderr));
+        } else {
+            eprintln!("[MAIN DEBUG] Subprocess stderr is empty");
         }
 
         if !output.status.success() {
@@ -216,12 +219,24 @@ impl ProvingEngine {
         let mut buffer = [0u8; 12];  // 3 x u32 = 12 bytes exactly
 
         // Direct memory copy - no heap allocations!
-        buffer[0..4].copy_from_slice(&inputs.0.to_le_bytes());
-        buffer[4..8].copy_from_slice(&inputs.1.to_le_bytes());
-        buffer[8..12].copy_from_slice(&inputs.2.to_le_bytes());
+        let input1_bytes = inputs.0.to_le_bytes();
+        let input2_bytes = inputs.1.to_le_bytes();
+        let input3_bytes = inputs.2.to_le_bytes();
+
+        eprintln!("[MAIN DEBUG] Input {} -> bytes: {:?}", inputs.0, input1_bytes);
+        eprintln!("[MAIN DEBUG] Input {} -> bytes: {:?}", inputs.1, input2_bytes);
+        eprintln!("[MAIN DEBUG] Input {} -> bytes: {:?}", inputs.2, input3_bytes);
+
+        buffer[0..4].copy_from_slice(&input1_bytes);
+        buffer[4..8].copy_from_slice(&input2_bytes);
+        buffer[8..12].copy_from_slice(&input3_bytes);
+
+        eprintln!("[MAIN DEBUG] Input buffer: {:?}", buffer);
+        eprintln!("[MAIN DEBUG] Writing {} bytes to stdin", buffer.len());
 
         stdin.write_all(&buffer).await?;
         stdin.flush().await?;
+        eprintln!("[MAIN DEBUG] Successfully wrote and flushed inputs to stdin");
 
         Ok(())
     }

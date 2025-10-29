@@ -139,27 +139,27 @@ impl ProvingPipeline {
         let mut all_proofs = Vec::new();
         let mut proof_hashes = Vec::new();
         for (_input_index, input_data) in all_inputs.iter().enumerate() {
-            println!("[DEBUG] Processing input {}: {:?}", _input_index, input_data);
+            eprintln!("[DEBUG] Processing input {}: {:?}", _input_index, input_data);
             let inputs = InputParser::parse_triple_input(input_data)?;
-            println!("[DEBUG] Parsed inputs: {:?}", inputs);
+            eprintln!("[DEBUG] Parsed inputs: {:?}", inputs);
 
             // Test: Use the original working subprocess version
             let proof = super::engine::ProvingEngine::prove_and_validate(&inputs, task, environment, client_id).await?;
-            println!("[DEBUG] Generated proof successfully, proof size: {} bytes",
+            eprintln!("[DEBUG] Generated proof successfully, proof size: {} bytes",
                 std::mem::size_of_val(&proof));
 
             let proof_hash = Self::generate_proof_hash(&proof);
-            println!("[DEBUG] Generated proof hash: {} (length: {})",
+            eprintln!("[DEBUG] Generated proof hash: {} (length: {})",
                 proof_hash, proof_hash.len());
 
             all_proofs.push(proof);
             proof_hashes.push(proof_hash);
-            println!("[DEBUG] Added proof to collections. Total proofs: {}", all_proofs.len());
+            eprintln!("[DEBUG] Added proof to collections. Total proofs: {}", all_proofs.len());
         }
         let final_proof_hash = Self::combine_proof_hashes(task, &proof_hashes);
-        println!("[DEBUG] Final combined hash: {} (length: {})",
+        eprintln!("[DEBUG] Final combined hash: {} (length: {})",
             final_proof_hash, final_proof_hash.len());
-        println!("[DEBUG] Returning {} proofs and {} hashes for submission",
+        eprintln!("[DEBUG] Returning {} proofs and {} hashes for submission",
             all_proofs.len(), proof_hashes.len());
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
