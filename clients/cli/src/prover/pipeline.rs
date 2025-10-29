@@ -41,7 +41,11 @@ impl ProvingPipeline {
         client_id: &str,
         num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
-        // No global process pool initialization needed - using direct engine approach
+        // Monitor memory at task boundary for low-memory systems
+        let total_memory_gb = crate::system::total_memory_gb();
+        if total_memory_gb <= 2.0 {
+            log_memory_usage("Task boundary - before new task");
+        }
 
         match task.program_id.as_str() {
             "fib_input_initial" => {
@@ -240,14 +244,31 @@ impl ProvingPipeline {
         // Use optimized reference for hash combination
         let final_proof_hash = Self::combine_proof_hashes(&task, &proof_hashes);
 
-        // For low-memory systems, we'll skip aggressive vector cleanup to avoid submission issues
-        // The single-threaded processing and memory monitoring should be sufficient to prevent OOM
+        // For low-memory systems, implement critical memory management
         if total_memory_gb <= 2.0 {
             log_memory_usage("Before returning results");
-            println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
-        }
 
-        Ok((all_proofs, final_proof_hash, proof_hashes))
+            // Check memory usage and potentially warn about high usage
+            if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
+                if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
+                    if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
+                        if let Ok(memory_mb) = mb_str.parse::<usize>() {
+                            if memory_mb > 1_400_000 { // 1.4GB warning threshold
+                                println!("[WARNING] High memory usage detected: {} MB", memory_mb / 1024);
+                            }
+                        }
+                    }
+                }
+            }
+
+            println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
+
+            // Return results normally - let task completion boundary handle memory release
+            Ok((all_proofs, final_proof_hash, proof_hashes))
+        } else {
+            // Normal path for systems with sufficient memory
+            Ok((all_proofs, final_proof_hash, proof_hashes))
+        }
     }
 
     /// Generate proof using optimized engine approach
