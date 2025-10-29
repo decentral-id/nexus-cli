@@ -4,7 +4,6 @@
 
 use std::time::Instant;
 use std::cell::RefCell;
-use nexus_sdk::Prover;
 use super::input::InputParser;
 use super::adaptive_batch::get_global_batcher;
 use super::types::ProverError;
@@ -41,37 +40,10 @@ impl ProvingPipeline {
         client_id: &str,
         num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
-        // Monitor memory at task boundary for low-memory systems
+        // Simple monitoring for low-memory systems
         let total_memory_gb = crate::system::total_memory_gb();
         if total_memory_gb <= 2.0 {
             log_memory_usage("Task boundary - before new task");
-
-            // Check if we're approaching OOM threshold and force cleanup
-            if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
-                if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
-                    if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
-                        if let Ok(memory_kb) = mb_str.parse::<usize>() {
-                            if memory_kb > 900_000 { // 900MB threshold
-                                println!("[WARNING] High memory usage detected: {} MB - forcing cleanup", memory_kb / 1024);
-
-                                // Force garbage collection and memory cleanup
-                                for i in 0..5 {
-                                    println!("[CLEANUP] Memory reclamation cycle {}", i + 1);
-                                    tokio::task::yield_now().await;
-
-                                    // Trigger garbage collection hints
-                                    if i == 2 {
-                                        std::process::Command::new("sync").status().ok();
-                                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                                    }
-                                }
-
-                                log_memory_usage("After forced cleanup");
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         match task.program_id.as_str() {
@@ -158,8 +130,8 @@ impl ProvingPipeline {
                         // Step 1: Parse and validate input
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
-                        // Step 2: Generate proof using optimized engine
-                        let proof = Self::prove_with_optimized_engine(&inputs).await?;
+                        // Step 2: Generate proof using isolated subprocess
+                        let proof = Self::prove_with_isolated_process(&inputs).await?;
 
                         // Step 3: Generate proof hash with ultra-optimized thread-local buffer
                         let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
@@ -169,27 +141,9 @@ impl ProvingPipeline {
 
                     results.push(Ok(result));
 
-                    // CRITICAL: Monitor memory after each proof in low-memory mode
-                    if total_memory_gb <= 2.0 {
+                    // Simple monitoring - no complex cleanup needed with subprocess isolation
+                    if total_memory_gb <= 2.0 && local_index == 0 {
                         log_memory_usage(&format!("After proof {}", local_index + 1));
-
-                        // Check memory after each proof - if approaching limit, stop immediately
-                        if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
-                            if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
-                                if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
-                                    if let Ok(memory_kb) = mb_str.parse::<usize>() {
-                                        if memory_kb > 1_100_000 { // 1.1GB warning threshold
-                                            println!("[EMERGENCY] Memory spike detected: {} MB - stopping batch to prevent OOM", memory_kb / 1024);
-                                            // Force immediate yield and continue
-                                            tokio::task::yield_now().await;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Give system a chance to reclaim memory between proofs
-                        tokio::task::yield_now().await;
                     }
                 }
                 results
@@ -206,8 +160,8 @@ impl ProvingPipeline {
                             // Step 1: Parse and validate input
                             let inputs = InputParser::parse_triple_input(&input_data)?;
 
-                            // Step 2: Generate proof using optimized engine
-                            let proof = Self::prove_with_optimized_engine(&inputs).await?;
+                            // Step 2: Generate proof using isolated subprocess
+                            let proof = Self::prove_with_isolated_process(&inputs).await?;
 
                             // Step 3: Generate proof hash with ultra-optimized thread-local buffer
                             let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
@@ -296,101 +250,21 @@ impl ProvingPipeline {
         // Use optimized reference for hash combination
         let final_proof_hash = Self::combine_proof_hashes(&task, &proof_hashes);
 
-        // For low-memory systems, implement critical memory management
+        // Simple return - subprocess isolation handles memory automatically
         if total_memory_gb <= 2.0 {
-            log_memory_usage("Before returning results");
-
-            // Check memory usage and implement restart strategy for low-memory systems
-            let current_memory_kb = if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
-                if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
-                    if let Some(mb_str) = vmrss_line.split_whitespace().nth(1) {
-                        mb_str.parse::<usize>().unwrap_or(0)
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-
-            // Aggressive memory cleanup for t3.small to enable multiple tasks
-            println!("[INFO] Low-memory processing completed: {} proofs processed", all_inputs.len());
-            println!("[INFO] Memory usage: {} MB - attempting reclamation", current_memory_kb / 1024);
-
-            // Force aggressive cleanup to reclaim memory for next task
-            println!("[CLEANUP] Starting aggressive memory reclamation...");
-
-            // Multiple cleanup cycles with different strategies
-            for i in 0..8 {
-                match i {
-                    0 => {
-                        println!("[CLEANUP] Cycle 1: Basic vector clearing");
-                        tokio::task::yield_now().await;
-                    }
-                    1 => {
-                        println!("[CLEANUP] Cycle 2: Force sync");
-                        std::process::Command::new("sync").status().ok();
-                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                    }
-                    2 => {
-                        println!("[CLEANUP] Cycle 3: Memory pressure simulation");
-                        // Allocate and drop small chunks to trigger allocator cleanup
-                        let _temp_vecs: Vec<Vec<u8>> = (0..100).map(|_| vec![0u8; 1024]).collect();
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    }
-                    3 => {
-                        println!("[CLEANUP] Cycle 4: System cache flush");
-                        std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg("echo 3 > /proc/sys/vm/drop_caches")
-                            .status().ok();
-                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-                    }
-                    4 => {
-                        println!("[CLEANUP] Cycle 5: Multiple yield cycles");
-                        for _ in 0..10 {
-                            tokio::task::yield_now().await;
-                        }
-                    }
-                    _ => {
-                        println!("[CLEANUP] Cycle {}: Final cleanup", i + 1);
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-
-            log_memory_usage("After aggressive reclamation");
-
-            // Return results - memory should now be reclaimed
-            println!("[CLEANUP] Aggressive reclamation completed");
-            Ok((all_proofs, final_proof_hash, proof_hashes))
-        } else {
-            // Normal path for systems with sufficient memory
-            Ok((all_proofs, final_proof_hash, proof_hashes))
+            log_memory_usage("Task completed");
+            println!("[INFO] Low-memory processing completed: {} proofs processed (subprocess isolation active)", all_inputs.len());
         }
+
+        Ok((all_proofs, final_proof_hash, proof_hashes))
     }
 
-    /// Generate proof using optimized engine approach
-    async fn prove_with_optimized_engine(
+    /// Generate proof using isolated subprocess for guaranteed memory cleanup
+    async fn prove_with_isolated_process(
         inputs: &(u32, u32, u32),
     ) -> Result<nexus_sdk::stwo::seq::Proof, ProverError> {
-        // Use the original proven approach with our zero-allocation optimizations
-        let prover = super::engine::ProvingEngine::create_fib_prover()?;
-        let (view, proof) = prover
-            .prove_with_input::<(), (u32, u32, u32)>(&(), inputs)
-            .map_err(|e| {
-                super::types::ProverError::Stwo(format!(
-                    "Failed to generate proof for inputs {:?}: {}",
-                    inputs, e
-                ))
-            })?;
-
-        // Check exit code
-        super::verifier::ProofVerifier::check_exit_code(&view)?;
-
-        Ok(proof)
+        // Use subprocess isolation - memory gets reclaimed when process exits
+        super::engine::ProvingEngine::prove_fib_subprocess(inputs)
     }
 
     /// Generate hash for a proof with ultra-optimized thread-local buffer
