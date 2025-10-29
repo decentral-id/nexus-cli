@@ -38,23 +38,24 @@ impl ProvingEngine {
         let exe_path = env::current_exe()?;
         let mut cmd = tokio::process::Command::new(exe_path);
         cmd.arg("prove-fib-subprocess")
-            .stdin(Stdio::piped())
+            .arg("--inputs")
+            .arg(serde_json::to_string(inputs)?)  // Use JSON like original
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
         // Apply performance optimizations
         Self::apply_performance_optimizations(&mut cmd);
 
-        let mut child = cmd.spawn()?;
-
-        // Write binary inputs to subprocess stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = Self::write_inputs_direct(&mut stdin, inputs).await {
-                return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
-            }
-        }
+        let child = cmd.spawn()?;
 
         let output = child.wait_with_output().await?;
+
+        // Debug: Log subprocess execution details
+        println!("[DEBUG] Isolated subprocess exit status: {}", output.status);
+        println!("[DEBUG] Isolated subprocess stdout length: {} bytes", output.stdout.len());
+        if !output.stderr.is_empty() {
+            println!("[DEBUG] Isolated subprocess stderr: {}", String::from_utf8_lossy(&output.stderr));
+        }
 
         if !output.status.success() {
             if let Some(code) = output.status.code() {
@@ -74,9 +75,14 @@ impl ProvingEngine {
             )));
         }
 
-        // Deserialize proof from subprocess stdout
-        let proof = postcard::from_bytes::<Proof>(&output.stdout)
-            .map_err(|e| ProverError::Subprocess(format!("Failed to deserialize proof: {}", e)))?;
+        // Deserialize proof from subprocess stdout (exact same as working version)
+        let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
+            ProverError::Subprocess(format!(
+                "Failed to deserialize proof from subprocess stdout: {} (stdout len: {})",
+                e,
+                output.stdout.len()
+            ))
+        })?;
 
         Ok(proof)
     }
