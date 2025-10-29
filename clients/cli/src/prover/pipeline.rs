@@ -151,8 +151,8 @@ impl ProvingPipeline {
                 // Parse input
                 let inputs = InputParser::parse_triple_input(input_data)?;
 
-                // Generate proof using true subprocess isolation (no submission logic)
-                let proof = super::engine::ProvingEngine::prove_fib_subprocess_isolated(&inputs).await?;
+                // Test: Use the original working function temporarily to debug
+                let proof = super::engine::ProvingEngine::prove_and_validate(&inputs, task, _environment, _client_id).await?;
 
                 // Generate hash
                 let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
