@@ -127,7 +127,6 @@ impl ProvingEngine {
         let mut child = cmd.spawn()?;
 
         // Write binary inputs to subprocess stdin with zero-allocation
-        eprintln!("[MAIN DEBUG] Writing inputs to subprocess stdin: {:?}", inputs);
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = Self::write_inputs_direct(&mut stdin, inputs).await {
                 return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
@@ -137,13 +136,7 @@ impl ProvingEngine {
 
         let output = child.wait_with_output().await?;
 
-        // Debug: Print subprocess stderr to see what happened
-        if !output.stderr.is_empty() {
-            eprintln!("[MAIN DEBUG] Subprocess stderr ({} bytes): {}", output.stderr.len(), String::from_utf8_lossy(&output.stderr));
-        } else {
-            eprintln!("[MAIN DEBUG] Subprocess stderr is empty");
-        }
-
+        
         if !output.status.success() {
             if let Some(code) = output.status.code() {
                 if code == crate::consts::cli_consts::SUBPROCESS_SUSPECTED_OOM_CODE {
@@ -181,20 +174,7 @@ impl ProvingEngine {
             )));
         }
 
-        // Deserialize proof from subprocess stdout with enhanced error checking
-        eprintln!("[MAIN DEBUG] Subprocess stdout length: {} bytes", output.stdout.len());
-
-        // Debug: Check if stdout looks reasonable
-        if output.stdout.len() < 100 {
-            return Err(ProverError::Subprocess(format!(
-                "Subprocess stdout too short: {} bytes - likely incomplete data",
-                output.stdout.len()
-            )));
-        }
-
-        // Debug: Check first few bytes to see if they look like valid postcard data
-        eprintln!("[MAIN DEBUG] First 20 bytes: {:?}", &output.stdout[..20.min(output.stdout.len())]);
-
+        // Deserialize proof from subprocess stdout
         let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
             ProverError::Subprocess(format!(
                 "Failed to deserialize proof from subprocess stdout: {} (stdout len: {})",
@@ -202,7 +182,6 @@ impl ProvingEngine {
                 output.stdout.len()
             ))
         })?;
-        eprintln!("[MAIN DEBUG] Deserialized proof successfully");
 
         // Skip redundant verification in main process
         // Verification is already done in subprocess via verifier::check_exit_code()
@@ -219,24 +198,12 @@ impl ProvingEngine {
         let mut buffer = [0u8; 12];  // 3 x u32 = 12 bytes exactly
 
         // Direct memory copy - no heap allocations!
-        let input1_bytes = inputs.0.to_le_bytes();
-        let input2_bytes = inputs.1.to_le_bytes();
-        let input3_bytes = inputs.2.to_le_bytes();
-
-        eprintln!("[MAIN DEBUG] Input {} -> bytes: {:?}", inputs.0, input1_bytes);
-        eprintln!("[MAIN DEBUG] Input {} -> bytes: {:?}", inputs.1, input2_bytes);
-        eprintln!("[MAIN DEBUG] Input {} -> bytes: {:?}", inputs.2, input3_bytes);
-
-        buffer[0..4].copy_from_slice(&input1_bytes);
-        buffer[4..8].copy_from_slice(&input2_bytes);
-        buffer[8..12].copy_from_slice(&input3_bytes);
-
-        eprintln!("[MAIN DEBUG] Input buffer: {:?}", buffer);
-        eprintln!("[MAIN DEBUG] Writing {} bytes to stdin", buffer.len());
+        buffer[0..4].copy_from_slice(&inputs.0.to_le_bytes());
+        buffer[4..8].copy_from_slice(&inputs.1.to_le_bytes());
+        buffer[8..12].copy_from_slice(&inputs.2.to_le_bytes());
 
         stdin.write_all(&buffer).await?;
         stdin.flush().await?;
-        eprintln!("[MAIN DEBUG] Successfully wrote and flushed inputs to stdin");
 
         Ok(())
     }

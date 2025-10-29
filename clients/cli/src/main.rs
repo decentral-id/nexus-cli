@@ -219,12 +219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Read binary inputs from stdin
             let mut stdin_data = Vec::new();
             match std::io::stdin().read_to_end(&mut stdin_data) {
-                Ok(_) => {
-                    eprintln!("[SUBPROCESS DEBUG] Read {} bytes from stdin", stdin_data.len());
-                    if stdin_data.len() >= 12 {
-                        eprintln!("[SUBPROCESS DEBUG] First 12 bytes: {:?}", &stdin_data[..12]);
-                    }
-                }
+                Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
                     // Broken pipe during stdin read - likely shutdown, exit silently
                     exit(0);
@@ -233,21 +228,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     eprintln!("Failed to read from stdin: {}", e);
                     exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
                 }
-            }
-
-            // Debug: Try to parse the raw bytes manually to verify data integrity
-            if stdin_data.len() >= 12 {
-                let mut bytes = [0u8; 4];
-                bytes.copy_from_slice(&stdin_data[0..4]);
-                let input1 = u32::from_le_bytes(bytes);
-
-                bytes.copy_from_slice(&stdin_data[4..8]);
-                let input2 = u32::from_le_bytes(bytes);
-
-                bytes.copy_from_slice(&stdin_data[8..12]);
-                let input3 = u32::from_le_bytes(bytes);
-
-                eprintln!("[SUBPROCESS DEBUG] Manual parsing of bytes: ({}, {}, {})", input1, input2, input3);
             }
 
             // Use manual parsing since main process sends raw binary data, not postcard data
@@ -267,27 +247,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let input3 = u32::from_le_bytes(bytes);
 
             let inputs = (input1, input2, input3);
-            eprintln!("[SUBPROCESS DEBUG] Using manually parsed inputs: {:?}", inputs);
             match ProvingEngine::prove_fib_subprocess(&inputs) {
                 Ok(proof) => {
                     let bytes = to_allocvec(&proof)?;
-                    eprintln!("[SUBPROCESS DEBUG] Generated proof, bytes: {}", bytes.len());
 
-                    // Debug: Print first few bytes to verify serialization (to stderr)
-                    if bytes.len() >= 20 {
-                        eprintln!("[SUBPROCESS DEBUG] First 20 bytes: {:?}", &bytes[..20]);
-                    }
-
-                    // Ensure atomic write to stdout with ONLY binary data (no debug output)
+                    // Ensure atomic write to stdout with ONLY binary data
                     let mut out = std::io::stdout().lock();
                     match out.write_all(&bytes) {
                         Ok(_) => {
                             // Ensure data is flushed before returning
                             match out.flush() {
-                                Ok(_) => {
-                                    eprintln!("[SUBPROCESS DEBUG] Successfully flushed {} bytes to stdout", bytes.len());
-                                    Ok(())
-                                }
+                                Ok(_) => Ok(()),
                                 Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
                                     // Broken pipe during flush - likely shutdown, exit silently
                                     exit(0);
