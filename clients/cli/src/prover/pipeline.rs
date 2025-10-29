@@ -151,8 +151,8 @@ impl ProvingPipeline {
                 // Parse input
                 let inputs = InputParser::parse_triple_input(input_data)?;
 
-                // Generate proof using actual subprocess isolation
-                let proof = Self::prove_with_true_subprocess_isolation(&inputs, task, _environment, _client_id).await?;
+                // Generate proof using true subprocess isolation (no submission logic)
+                let proof = super::engine::ProvingEngine::prove_fib_subprocess_isolated(&inputs).await?;
 
                 // Generate hash
                 let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
@@ -239,7 +239,7 @@ impl ProvingPipeline {
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
                         // Step 2: Generate proof using isolated subprocess
-                        let proof = Self::prove_with_isolated_process(&inputs).await?;
+                        let proof = super::engine::ProvingEngine::prove_fib_subprocess_isolated(&inputs).await?;
 
                         // Step 3: Generate proof hash with ultra-optimized thread-local buffer
                         let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
@@ -335,26 +335,7 @@ impl ProvingPipeline {
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
 
-    /// Generate proof using true subprocess isolation for guaranteed memory cleanup
-    async fn prove_with_true_subprocess_isolation(
-        inputs: &(u32, u32, u32),
-        task: &Task,
-        environment: &Environment,
-        client_id: &str,
-    ) -> Result<nexus_sdk::stwo::seq::Proof, ProverError> {
-        // Use actual subprocess isolation - memory gets reclaimed when process exits
-        super::engine::ProvingEngine::prove_and_validate(inputs, task, environment, client_id).await
-    }
-
-    /// Generate proof using isolated subprocess for guaranteed memory cleanup (DEPRECATED - not actually isolated)
-    async fn prove_with_isolated_process(
-        inputs: &(u32, u32, u32),
-    ) -> Result<nexus_sdk::stwo::seq::Proof, ProverError> {
-        // This function is NOT actually isolated - it runs in the same process!
-        // Use prove_with_true_subprocess_isolation instead
-        super::engine::ProvingEngine::prove_fib_subprocess(inputs)
-    }
-
+    
     /// Generate hash for a proof with ultra-optimized thread-local buffer
     fn generate_proof_hash_ultra_optimized(proof: &Proof) -> Result<String, ProverError> {
         HASH_BUFFER.with(|buffer_cell| {

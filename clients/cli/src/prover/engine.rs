@@ -32,7 +32,56 @@ impl ProvingEngine {
         })
     }
 
-    /// Subprocess entrypoint: generate proof without verification
+    /// Generate proof using true subprocess isolation (no validation/submission)
+    pub async fn prove_fib_subprocess_isolated(inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
+        // Spawn a subprocess for proof generation to isolate memory usage
+        let exe_path = env::current_exe()?;
+        let mut cmd = tokio::process::Command::new(exe_path);
+        cmd.arg("prove-fib-subprocess")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+
+        // Apply performance optimizations
+        Self::apply_performance_optimizations(&mut cmd);
+
+        let mut child = cmd.spawn()?;
+
+        // Write binary inputs to subprocess stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = Self::write_inputs_direct(&mut stdin, inputs).await {
+                return Err(ProverError::Subprocess(format!("Failed to write to subprocess stdin: {}", e)));
+            }
+        }
+
+        let output = child.wait_with_output().await?;
+
+        if !output.status.success() {
+            if let Some(code) = output.status.code() {
+                if code == crate::consts::cli_consts::SUBPROCESS_SUSPECTED_OOM_CODE {
+                    return Err(ProverError::Subprocess("Process likely killed by OOM".to_string()));
+                }
+                if code == crate::consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE {
+                    return Err(ProverError::Subprocess(format!(
+                        "Error in subprocess: {}",
+                        &String::from_utf8_lossy(&output.stderr)
+                    )));
+                }
+            }
+            return Err(ProverError::Subprocess(format!(
+                "Subprocess failed with status: {}",
+                output.status
+            )));
+        }
+
+        // Deserialize proof from subprocess stdout
+        let proof = postcard::from_bytes::<Proof>(&output.stdout)
+            .map_err(|e| ProverError::Subprocess(format!("Failed to deserialize proof: {}", e)))?;
+
+        Ok(proof)
+    }
+
+    /// Subprocess entrypoint: generate proof without verification (same process)
     pub fn prove_fib_subprocess(inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
         let prover = Self::create_fib_prover()?;
         let (view, proof) = prover
