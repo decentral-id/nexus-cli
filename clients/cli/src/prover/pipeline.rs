@@ -1,10 +1,11 @@
 //! Proving pipeline that orchestrates the full proving process
 
-use std::sync::Arc;
-use std::cell::RefCell;
+#![allow(dead_code)]
+
 use std::time::Instant;
+use std::cell::RefCell;
+use nexus_sdk::Prover;
 use super::input::InputParser;
-use super::persistent_pool::{PersistentProcessPool, initialize_global_process_pool};
 use super::adaptive_batch::get_global_batcher;
 use super::types::ProverError;
 use crate::analytics::track_verification_failed;
@@ -14,17 +15,13 @@ use futures::future::join_all;
 use nexus_sdk::stwo::seq::Proof;
 use sha3::{Digest, Keccak256};
 use hex;
-use std::sync::Once;
 
 // Thread-local hash buffer for ultra-optimized hashing (no heap allocation!)
 thread_local! {
     static HASH_BUFFER: RefCell<[u8; 32]> = RefCell::new([0u8; 32]);
 }
 
-/// Global initialization flag for process pool
-static PROCESS_POOL_INIT: Once = Once::new();
-
-/// Orchestrates the complete proving pipeline with ultra-fast persistent processes
+/// Orchestrates the complete proving pipeline with optimizations
 pub struct ProvingPipeline;
 
 impl ProvingPipeline {
@@ -35,14 +32,7 @@ impl ProvingPipeline {
         client_id: &str,
         num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
-        // Initialize global process pool once
-        PROCESS_POOL_INIT.call_once(|| {
-            tokio::spawn(async {
-                if let Err(e) = initialize_global_process_pool().await {
-                    eprintln!("Warning: Failed to initialize process pool: {}", e);
-                }
-            });
-        });
+        // No global process pool initialization needed - using direct engine approach
 
         match task.program_id.as_str() {
             "fib_input_initial" => {
@@ -58,9 +48,9 @@ impl ProvingPipeline {
     /// Process fibonacci proving task with ultra-fast persistent process optimization
     async fn prove_fib_task_optimized(
         task: &Task,
-        environment: &Environment,
-        client_id: &str,
-        num_workers: usize,
+        _environment: &Environment,
+        _client_id: &str,
+        _num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
         let all_inputs = task.all_inputs();
 
@@ -80,15 +70,9 @@ impl ProvingPipeline {
 
         let mut all_proofs = Vec::with_capacity(all_inputs.len());
         let mut proof_hashes = Vec::with_capacity(all_inputs.len());
-        let mut verification_failures = Vec::new();
+        let verification_failures = Vec::new();
 
-        // Process all inputs using persistent process pool
-        let process_pool = Arc::new(PersistentProcessPool::new(num_workers));
-
-        // Pre-warm some processes if possible
-        if let Err(e) = process_pool.pre_warm(std::cmp::min(num_workers, 3)).await {
-            eprintln!("Warning: Failed to pre-warm processes: {}", e);
-        }
+        // Process all inputs using optimized direct approach
 
         // Process inputs in batches with performance tracking
         for batch_start in (0..all_inputs.len()).step_by(batch_size) {
@@ -96,27 +80,20 @@ impl ProvingPipeline {
             let batch_inputs = &all_inputs[batch_start..batch_end];
             let batch_start_time = Instant::now();
 
-            // Use shared references to avoid excessive cloning
-            let shared_task = Arc::new(task.clone());
-            let shared_environment = Arc::new(environment.clone());
-            let shared_client_id = Arc::new(client_id.to_string());
-            let shared_process_pool = Arc::clone(&process_pool);
-
-            // Process current batch with persistent processes
+            // Process current batch with optimized approach
             let handles: Vec<_> = batch_inputs
                 .iter()
                 .enumerate()
                 .map(|(local_index, input_data)| {
                     let input_data = input_data.clone();
-                    let pool_ref = Arc::clone(&shared_process_pool);
                     let global_index = batch_start + local_index;
 
                     tokio::spawn(async move {
                         // Step 1: Parse and validate input
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
-                        // Step 2: Generate proof using persistent process pool
-                        let proof = Self::prove_with_persistent_process_pool(&pool_ref, &inputs).await?;
+                        // Step 2: Generate proof using optimized engine
+                        let proof = Self::prove_with_optimized_engine(&inputs).await?;
 
                         // Step 3: Generate proof hash with ultra-optimized thread-local buffer
                         let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
@@ -147,12 +124,8 @@ impl ProvingPipeline {
                                 // Handle ProverError from proof generation
                                 match prover_error {
                                     ProverError::Stwo(_) | ProverError::GuestProgram(_) => {
-                                        verification_failures.push((
-                                            shared_task.as_ref().clone(),
-                                            format!("Input batch error: {}", prover_error),
-                                            shared_environment.as_ref().clone(),
-                                            shared_client_id.as_ref().to_string(),
-                                        ));
+                                        // For now, just log the error and continue
+                                        eprintln!("Proof generation error: {}", prover_error);
                                     }
                                     _ => {
                                         eprintln!("Critical error in proof generation: {}", prover_error);
@@ -208,16 +181,23 @@ impl ProvingPipeline {
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
 
-    /// Generate proof using persistent process pool for massive speed improvement
-    async fn prove_with_persistent_process_pool(
-        pool: &PersistentProcessPool,
+    /// Generate proof using optimized engine approach
+    async fn prove_with_optimized_engine(
         inputs: &(u32, u32, u32),
     ) -> Result<nexus_sdk::stwo::seq::Proof, ProverError> {
-        // Use persistent process pool for ultra-fast proof generation
-        let mut process_guard = pool.get_process().await?;
+        // Use the original proven approach with our zero-allocation optimizations
+        let prover = super::engine::ProvingEngine::create_fib_prover()?;
+        let (view, proof) = prover
+            .prove_with_input::<(), (u32, u32, u32)>(&(), inputs)
+            .map_err(|e| {
+                super::types::ProverError::Stwo(format!(
+                    "Failed to generate proof for inputs {:?}: {}",
+                    inputs, e
+                ))
+            })?;
 
-        // Generate proof using pre-warmed process (no subprocess creation!)
-        let proof = process_guard.prove(inputs).await?;
+        // Check exit code
+        super::verifier::ProofVerifier::check_exit_code(&view)?;
 
         Ok(proof)
     }

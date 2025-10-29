@@ -146,9 +146,6 @@ impl ProverBenchmark {
         };
 
         let mut proof_times = Vec::new();
-        let shared_task = Arc::new(task.clone());
-        let shared_environment = Arc::new(environment.clone());
-        let shared_client_id = Arc::new(client_id.to_string());
 
         // Process in batches
         for batch_start in (0..test_inputs.len()).step_by(batch_size) {
@@ -159,12 +156,8 @@ impl ProverBenchmark {
             let handles: Vec<_> = batch_inputs
                 .iter()
                 .enumerate()
-                .map(|(local_index, input_data)| {
+                .map(|(_local_index, input_data)| {
                     let input_data = input_data.clone();
-                    let pool_ref = Arc::clone(&pool);
-                    let task_ref = Arc::clone(&shared_task);
-                    let env_ref = Arc::clone(&shared_environment);
-                    let client_ref = Arc::clone(&shared_client_id);
 
                     tokio::spawn(async move {
                         let inputs = InputParser::parse_triple_input(&input_data)?;

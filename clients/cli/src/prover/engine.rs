@@ -1,5 +1,7 @@
 //! Core proving engine
 
+#![allow(dead_code)]
+
 use crate::prover::verifier;
 
 use super::types::ProverError;

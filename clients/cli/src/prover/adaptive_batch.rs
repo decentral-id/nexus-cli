@@ -1,5 +1,7 @@
 //! Adaptive dynamic batching for optimal resource utilization
 
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -104,6 +106,11 @@ impl AdaptiveBatcher {
 
     /// Get the current batch size with memory-based adjustment
     pub async fn get_memory_adjusted_batch_size(&self, input_count: usize) -> usize {
+        // For single tasks, don't batch at all
+        if input_count == 1 {
+            return 1;
+        }
+
         let base_batch_size = self.get_optimal_batch_size().await;
 
         // Additional memory-based adjustment
@@ -117,7 +124,9 @@ impl AdaptiveBatcher {
         };
 
         let adjusted_size = (base_batch_size as f64 * memory_multiplier) as usize;
-        std::cmp::min(adjusted_size, input_count)
+
+        // Don't let batch size exceed input count, and ensure minimum batch size
+        std::cmp::min(std::cmp::max(adjusted_size, 1), input_count)
     }
 
     /// Record performance metrics for a batch
