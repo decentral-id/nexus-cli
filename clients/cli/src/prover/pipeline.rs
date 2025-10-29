@@ -145,26 +145,14 @@ impl ProvingPipeline {
             for (index, input_data) in all_inputs.iter().enumerate() {
                 println!("[INFO] Processing proof {}/{} in low-memory mode", index + 1, all_inputs.len());
 
-                // CRITICAL: Force garbage collection before each proof
-                if index > 0 {
-                    // Clear all collections to force memory deallocation
-                    all_proofs.clear();
-                    proof_hashes.clear();
-
-                    // Force thread-local buffer cleanup
-                    HASH_BUFFER.with(|buffer_cell| {
-                        let mut buffer = buffer_cell.borrow_mut();
-                        buffer.fill(0);
-                    });
-
-                    log_memory_usage(&format!("After cleanup before proof {}", index + 1));
-                }
+                // NOTE: Don't clear collections before proofs - we need to maintain all proofs for submission
+                // The subprocess isolation should handle memory cleanup
 
                 // Parse input
                 let inputs = InputParser::parse_triple_input(input_data)?;
 
-                // Generate proof using isolated subprocess (each proof gets its own process)
-                let proof = Self::prove_with_isolated_process(&inputs).await?;
+                // Generate proof using actual subprocess isolation
+                let proof = Self::prove_with_true_subprocess_isolation(&inputs, task, _environment, _client_id).await?;
 
                 // Generate hash
                 let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
@@ -173,33 +161,8 @@ impl ProvingPipeline {
                 all_proofs.push(proof);
                 proof_hashes.push(proof_hash);
 
-                // CRITICAL: Force memory cleanup after each proof for large tasks
-                if all_inputs.len() > 5 {
-                    // For tasks with more than 5 inputs, clear after each proof to prevent accumulation
-                    if index < all_inputs.len() - 1 { // Don't clear after the last proof
-                        // Temporary storage for current proof
-                        let current_proof = all_proofs.pop();
-                        let current_hash = proof_hashes.pop();
-
-                        // Clear main collections
-                        all_proofs.clear();
-                        proof_hashes.clear();
-
-                        // Force thread-local cleanup
-                        HASH_BUFFER.with(|buffer_cell| {
-                            let mut buffer = buffer_cell.borrow_mut();
-                            buffer.fill(0);
-                        });
-
-                        log_memory_usage(&format!("After aggressive cleanup proof {}", index + 1));
-
-                        // Restore current proof if we had it
-                        if let (Some(proof), Some(hash)) = (current_proof, current_hash) {
-                            all_proofs.push(proof);
-                            proof_hashes.push(hash);
-                        }
-                    }
-                }
+                // NOTE: Don't clear proofs array during processing - it causes submission count mismatch
+                // The actual subprocess isolation should handle memory cleanup properly now
 
                 // Log memory usage after each proof
                 if index == 0 || index % 3 == 0 {
@@ -372,11 +335,23 @@ impl ProvingPipeline {
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
 
-    /// Generate proof using isolated subprocess for guaranteed memory cleanup
+    /// Generate proof using true subprocess isolation for guaranteed memory cleanup
+    async fn prove_with_true_subprocess_isolation(
+        inputs: &(u32, u32, u32),
+        task: &Task,
+        environment: &Environment,
+        client_id: &str,
+    ) -> Result<nexus_sdk::stwo::seq::Proof, ProverError> {
+        // Use actual subprocess isolation - memory gets reclaimed when process exits
+        super::engine::ProvingEngine::prove_and_validate(inputs, task, environment, client_id).await
+    }
+
+    /// Generate proof using isolated subprocess for guaranteed memory cleanup (DEPRECATED - not actually isolated)
     async fn prove_with_isolated_process(
         inputs: &(u32, u32, u32),
     ) -> Result<nexus_sdk::stwo::seq::Proof, ProverError> {
-        // Use subprocess isolation - memory gets reclaimed when process exits
+        // This function is NOT actually isolated - it runs in the same process!
+        // Use prove_with_true_subprocess_isolation instead
         super::engine::ProvingEngine::prove_fib_subprocess(inputs)
     }
 
