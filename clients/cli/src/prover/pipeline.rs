@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 use super::input::InputParser;
-use super::engine::ProvingEngine;
 use super::types::ProverError;
 use crate::environment::Environment;
 use crate::task::Task;

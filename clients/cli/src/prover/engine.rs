@@ -136,6 +136,11 @@ impl ProvingEngine {
 
         let output = child.wait_with_output().await?;
 
+        // Debug: Print subprocess stderr to see what happened
+        if !output.stderr.is_empty() {
+            eprintln!("[MAIN DEBUG] Subprocess stderr: {}", String::from_utf8_lossy(&output.stderr));
+        }
+
         if !output.status.success() {
             if let Some(code) = output.status.code() {
                 if code == crate::consts::cli_consts::SUBPROCESS_SUSPECTED_OOM_CODE {
@@ -173,8 +178,20 @@ impl ProvingEngine {
             )));
         }
 
-        // Deserialize proof from subprocess stdout
-        println!("[MAIN DEBUG] Subprocess stdout length: {} bytes", output.stdout.len());
+        // Deserialize proof from subprocess stdout with enhanced error checking
+        eprintln!("[MAIN DEBUG] Subprocess stdout length: {} bytes", output.stdout.len());
+
+        // Debug: Check if stdout looks reasonable
+        if output.stdout.len() < 100 {
+            return Err(ProverError::Subprocess(format!(
+                "Subprocess stdout too short: {} bytes - likely incomplete data",
+                output.stdout.len()
+            )));
+        }
+
+        // Debug: Check first few bytes to see if they look like valid postcard data
+        eprintln!("[MAIN DEBUG] First 20 bytes: {:?}", &output.stdout[..20.min(output.stdout.len())]);
+
         let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
             ProverError::Subprocess(format!(
                 "Failed to deserialize proof from subprocess stdout: {} (stdout len: {})",
@@ -182,7 +199,7 @@ impl ProvingEngine {
                 output.stdout.len()
             ))
         })?;
-        println!("[MAIN DEBUG] Deserialized proof successfully");
+        eprintln!("[MAIN DEBUG] Deserialized proof successfully");
 
         // Skip redundant verification in main process
         // Verification is already done in subprocess via verifier::check_exit_code()

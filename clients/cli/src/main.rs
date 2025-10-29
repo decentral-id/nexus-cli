@@ -231,14 +231,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let inputs: (u32, u32, u32) = postcard::from_bytes(&stdin_data)?;
-            println!("[SUBPROCESS DEBUG] Received inputs: {:?}", inputs);
+            eprintln!("[SUBPROCESS DEBUG] Received inputs: {:?}", inputs);
             match ProvingEngine::prove_fib_subprocess(&inputs) {
                 Ok(proof) => {
                     let bytes = to_allocvec(&proof)?;
-                    println!("[SUBPROCESS DEBUG] Generated proof, bytes: {}", bytes.len());
+                    eprintln!("[SUBPROCESS DEBUG] Generated proof, bytes: {}", bytes.len());
+
+                    // Debug: Print first few bytes to verify serialization (to stderr)
+                    if bytes.len() >= 20 {
+                        eprintln!("[SUBPROCESS DEBUG] First 20 bytes: {:?}", &bytes[..20]);
+                    }
+
+                    // Ensure atomic write to stdout with ONLY binary data (no debug output)
                     let mut out = std::io::stdout().lock();
                     match out.write_all(&bytes) {
-                        Ok(_) => Ok(()),
+                        Ok(_) => {
+                            // Ensure data is flushed before returning
+                            match out.flush() {
+                                Ok(_) => {
+                                    eprintln!("[SUBPROCESS DEBUG] Successfully flushed {} bytes to stdout", bytes.len());
+                                    Ok(())
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                                    // Broken pipe during flush - likely shutdown, exit silently
+                                    exit(0);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to flush stdout: {}", e);
+                                    exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
+                                }
+                            }
+                        }
                         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
                             // Broken pipe during stdout write - likely shutdown, exit silently
                             exit(0);
@@ -250,7 +273,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 Err(e) => {
-                    eprintln!("{}", e);
+                    eprintln!("Error generating proof: {}", e);
                     exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
                 }
             }
