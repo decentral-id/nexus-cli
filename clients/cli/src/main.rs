@@ -231,9 +231,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let inputs: (u32, u32, u32) = postcard::from_bytes(&stdin_data)?;
+            println!("[SUBPROCESS DEBUG] Received inputs: {:?}", inputs);
             match ProvingEngine::prove_fib_subprocess(&inputs) {
                 Ok(proof) => {
                     let bytes = to_allocvec(&proof)?;
+                    println!("[SUBPROCESS DEBUG] Generated proof, bytes: {}", bytes.len());
                     let mut out = std::io::stdout().lock();
                     match out.write_all(&bytes) {
                         Ok(_) => Ok(()),

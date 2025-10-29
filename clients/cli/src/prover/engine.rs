@@ -174,6 +174,7 @@ impl ProvingEngine {
         }
 
         // Deserialize proof from subprocess stdout
+        println!("[MAIN DEBUG] Subprocess stdout length: {} bytes", output.stdout.len());
         let proof: Proof = from_bytes(&output.stdout).map_err(|e| {
             ProverError::Subprocess(format!(
                 "Failed to deserialize proof from subprocess stdout: {} (stdout len: {})",
@@ -181,6 +182,7 @@ impl ProvingEngine {
                 output.stdout.len()
             ))
         })?;
+        println!("[MAIN DEBUG] Deserialized proof successfully");
 
         // Skip redundant verification in main process
         // Verification is already done in subprocess via verifier::check_exit_code()
