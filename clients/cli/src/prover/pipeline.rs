@@ -21,6 +21,15 @@ thread_local! {
     static HASH_BUFFER: RefCell<[u8; 32]> = RefCell::new([0u8; 32]);
 }
 
+/// Memory monitoring helper for low-memory systems
+fn log_memory_usage(context: &str) {
+    if let Ok(memory_usage) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(vmrss_line) = memory_usage.lines().find(|line| line.starts_with("VmRSS:")) {
+            println!("[MEMORY] {}: {}", context, vmrss_line.trim());
+        }
+    }
+}
+
 /// Orchestrates the complete proving pipeline with optimizations
 pub struct ProvingPipeline;
 
@@ -60,15 +69,33 @@ impl ProvingPipeline {
             ));
         }
 
-        // Get adaptive batch size based on performance and system resources
-        let batcher = get_global_batcher();
-        let _base_batch_size = batcher.get_optimal_batch_size().await;
-        let batch_size = batcher.get_memory_adjusted_batch_size(all_inputs.len()).await;
+        // Memory-optimized batch size for low-memory systems
+        let total_memory_gb = crate::system::total_memory_gb();
+        let (batch_size, use_adaptive_batching) = if total_memory_gb <= 2.0 {
+            // Very conservative batching for t3.small (2GB or less)
+            (1, false) // Always batch size 1 to minimize memory usage
+        } else {
+            // Use adaptive batching only for systems with more memory
+            let batcher = get_global_batcher();
+            (batcher.get_memory_adjusted_batch_size(all_inputs.len()).await, true)
+        };
 
-        
-        let mut all_proofs = Vec::with_capacity(all_inputs.len());
-        let mut proof_hashes = Vec::with_capacity(all_inputs.len());
+        // Pre-allocate with smaller capacity for memory-constrained systems
+        let initial_capacity = if total_memory_gb <= 2.0 {
+            std::cmp::min(all_inputs.len(), 10) // Limit initial allocation
+        } else {
+            all_inputs.len()
+        };
+
+        let mut all_proofs = Vec::with_capacity(initial_capacity);
+        let mut proof_hashes = Vec::with_capacity(initial_capacity);
         let verification_failures = Vec::new();
+
+        // Force single-threaded processing for very low memory systems
+        if total_memory_gb <= 2.0 {
+            println!("[INFO] Low-memory mode detected: Using single-threaded processing for stability");
+            log_memory_usage("Task start");
+        }
 
         // Process all inputs using optimized direct approach
 
@@ -78,15 +105,16 @@ impl ProvingPipeline {
             let batch_inputs = &all_inputs[batch_start..batch_end];
             let batch_start_time = Instant::now();
 
-            // Process current batch with optimized approach
-            let handles: Vec<_> = batch_inputs
-                .iter()
-                .enumerate()
-                .map(|(local_index, input_data)| {
+            // Process current batch with memory-optimized approach
+            let results = if total_memory_gb <= 2.0 {
+                // Single-threaded processing for low-memory systems
+                let mut results = Vec::new();
+                for (local_index, input_data) in batch_inputs.iter().enumerate() {
                     let input_data = input_data.clone();
                     let global_index = batch_start + local_index;
 
-                    tokio::spawn(async move {
+                    // Process sequentially to minimize memory usage
+                    let result = async move {
                         // Step 1: Parse and validate input
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
@@ -97,17 +125,53 @@ impl ProvingPipeline {
                         let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
 
                         Ok((proof, proof_hash, global_index))
+                    }.await;
+
+                    results.push(Ok(result));
+
+                    // Force garbage collection between proofs in low-memory mode
+                    if total_memory_gb <= 2.0 && local_index % 3 == 0 {
+                        log_memory_usage(&format!("After proof {}", local_index + 1));
+                        // Give system a chance to reclaim memory
+                        tokio::task::yield_now().await;
+                    }
+                }
+                results
+            } else {
+                // Multi-threaded processing for systems with more memory
+                let handles: Vec<_> = batch_inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(local_index, input_data)| {
+                        let input_data = input_data.clone();
+                        let global_index = batch_start + local_index;
+
+                        tokio::spawn(async move {
+                            // Step 1: Parse and validate input
+                            let inputs = InputParser::parse_triple_input(&input_data)?;
+
+                            // Step 2: Generate proof using optimized engine
+                            let proof = Self::prove_with_optimized_engine(&inputs).await?;
+
+                            // Step 3: Generate proof hash with ultra-optimized thread-local buffer
+                            let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
+
+                            Ok((proof, proof_hash, global_index))
+                        })
                     })
-                })
-                .collect();
+                    .collect();
 
-            // Wait for batch completion
-            let results = join_all(handles).await;
+                // Wait for batch completion
+                join_all(handles).await
+            };
 
-            // Track batch performance for adaptive batching
-            let batch_duration = batch_start_time.elapsed();
-            let proofs_in_batch = results.len();
-            batcher.record_batch_performance(batch_size, batch_duration, proofs_in_batch).await;
+            // Track batch performance for adaptive batching (only for systems with sufficient memory)
+            if use_adaptive_batching {
+                let batch_duration = batch_start_time.elapsed();
+                let proofs_in_batch = results.len();
+                let batcher = get_global_batcher();
+                batcher.record_batch_performance(batch_size, batch_duration, proofs_in_batch).await;
+            }
 
             // Process results
             for result in results {
@@ -175,6 +239,23 @@ impl ProvingPipeline {
 
         // Use optimized reference for hash combination
         let final_proof_hash = Self::combine_proof_hashes(&task, &proof_hashes);
+
+        // Memory cleanup for low-memory systems
+        if total_memory_gb <= 2.0 {
+            log_memory_usage("Before cleanup");
+
+            // Explicit cleanup to help OOM situation
+            all_proofs.clear();
+            proof_hashes.clear();
+
+            // Force multiple garbage collection cycles
+            for _ in 0..3 {
+                tokio::task::yield_now().await;
+            }
+
+            log_memory_usage("After cleanup");
+            println!("[INFO] Low-memory cleanup completed: {} proofs processed", all_inputs.len());
+        }
 
         Ok((all_proofs, final_proof_hash, proof_hashes))
     }
