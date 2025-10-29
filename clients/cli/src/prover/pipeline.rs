@@ -68,13 +68,15 @@ impl ProvingPipeline {
                             let estimated_memory_per_proof_mb = 400; // Conservative estimate for single proof (based on Stwo prover requirements)
                             let estimated_peak_memory_mb = memory_mb + estimated_memory_per_proof_mb;
 
-                            // Use less restrictive limit - 95% of total memory for single proof
-                            if estimated_peak_memory_mb > (total_memory_gb * 1024.0 * 0.95) as usize {
+                            // More conservative limit for t3.small due to observed memory accumulation
+                            let memory_threshold_factor = if total_memory_gb <= 2.0 { 0.75 } else { 0.95 };
+                            if estimated_peak_memory_mb > (total_memory_gb * 1024.0 * memory_threshold_factor) as usize {
                                 return Err(ProverError::Stwo(format!(
-                                    "Insufficient memory for single proof: estimated {} MB needed, only {} MB available on {} GB system. Consider using larger instance.",
+                                    "Insufficient memory for single proof: estimated {} MB needed, only {} MB available on {} GB system ({}% threshold). Consider using larger instance.",
                                     estimated_peak_memory_mb,
-                                    (total_memory_gb * 1024.0) as usize,
-                                    total_memory_gb
+                                    (total_memory_gb * 1024.0 * memory_threshold_factor) as usize,
+                                    total_memory_gb,
+                                    (memory_threshold_factor * 100.0) as usize
                                 )));
                             }
 
@@ -85,6 +87,14 @@ impl ProvingPipeline {
                                 println!("[SYSTEM] Memory per proof: ~{} MB, system limit: {} MB",
                                     estimated_memory_per_proof_mb, (total_memory_gb * 1024.0 * 0.95) as usize);
                                 unsafe { CAPABILITIES_SHOWN = true; }
+                            }
+
+                            // Additional check for large tasks on low-memory systems
+                            if all_inputs.len() > 10 && total_memory_gb <= 2.0 && memory_mb > 1100 {
+                                return Err(ProverError::Stwo(format!(
+                                    "Large task ({}) rejected for low-memory system with high current usage ({} MB). Memory accumulation detected - restart recommended.",
+                                    all_inputs.len(), memory_mb
+                                )));
                             }
 
                             println!("[MEMORY] Pre-task check passed: {} MB used, {} inputs will be processed sequentially (estimated ~{} MB per proof)",
@@ -131,9 +141,24 @@ impl ProvingPipeline {
             let mut all_proofs = Vec::new();
             let mut proof_hashes = Vec::new();
 
-            // Process inputs one by one to minimize memory usage
+            // Process inputs one by one to minimize memory usage with aggressive cleanup
             for (index, input_data) in all_inputs.iter().enumerate() {
                 println!("[INFO] Processing proof {}/{} in low-memory mode", index + 1, all_inputs.len());
+
+                // CRITICAL: Force garbage collection before each proof
+                if index > 0 {
+                    // Clear all collections to force memory deallocation
+                    all_proofs.clear();
+                    proof_hashes.clear();
+
+                    // Force thread-local buffer cleanup
+                    HASH_BUFFER.with(|buffer_cell| {
+                        let mut buffer = buffer_cell.borrow_mut();
+                        buffer.fill(0);
+                    });
+
+                    log_memory_usage(&format!("After cleanup before proof {}", index + 1));
+                }
 
                 // Parse input
                 let inputs = InputParser::parse_triple_input(input_data)?;
@@ -144,11 +169,40 @@ impl ProvingPipeline {
                 // Generate hash
                 let proof_hash = Self::generate_proof_hash_ultra_optimized(&proof)?;
 
+                // Store results
                 all_proofs.push(proof);
                 proof_hashes.push(proof_hash);
 
+                // CRITICAL: Force memory cleanup after each proof for large tasks
+                if all_inputs.len() > 5 {
+                    // For tasks with more than 5 inputs, clear after each proof to prevent accumulation
+                    if index < all_inputs.len() - 1 { // Don't clear after the last proof
+                        // Temporary storage for current proof
+                        let current_proof = all_proofs.pop();
+                        let current_hash = proof_hashes.pop();
+
+                        // Clear main collections
+                        all_proofs.clear();
+                        proof_hashes.clear();
+
+                        // Force thread-local cleanup
+                        HASH_BUFFER.with(|buffer_cell| {
+                            let mut buffer = buffer_cell.borrow_mut();
+                            buffer.fill(0);
+                        });
+
+                        log_memory_usage(&format!("After aggressive cleanup proof {}", index + 1));
+
+                        // Restore current proof if we had it
+                        if let (Some(proof), Some(hash)) = (current_proof, current_hash) {
+                            all_proofs.push(proof);
+                            proof_hashes.push(hash);
+                        }
+                    }
+                }
+
                 // Log memory usage after each proof
-                if index == 0 || index % 5 == 0 {
+                if index == 0 || index % 3 == 0 {
                     log_memory_usage(&format!("After proof {}", index + 1));
                 }
             }
