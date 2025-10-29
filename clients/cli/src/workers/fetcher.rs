@@ -50,7 +50,8 @@ impl TaskFetcher {
         let request_timer = RequestTimer::new(timer_config);
 
         // Create network client with retry logic
-        let network_client = NetworkClient::new(request_timer, task_fetching::MAX_RETRIES);
+        let base_url = config.environment.orchestrator_url().to_string();
+        let network_client = NetworkClient::new(request_timer, task_fetching::MAX_RETRIES, base_url);
 
         Self {
             node_id,
