@@ -127,24 +127,8 @@ impl ProvingEngine {
         // Check system memory and apply appropriate optimizations
         let available_memory = get_available_memory_mb();
 
-        // Debug environment differences
-        eprintln!("[DEBUG] System info: available={}MB, checking for environment differences", available_memory);
-
         if available_memory < 950 { // Less than 950MB available (sub-1GB systems)
             eprintln!("[MEMORY] Critical low memory detected ({}MB), applying extreme optimizations", available_memory);
-
-            // Add extra debugging for sub-1GB systems
-            #[cfg(unix)]
-            {
-                eprintln!("[DEBUG] Sub-1GB environment - checking kernel and limits");
-                if let Ok(output) = std::process::Command::new("uname").arg("-r").output() {
-                    eprintln!("[DEBUG] Kernel version: {}", String::from_utf8_lossy(&output.stdout).trim());
-                }
-                if let Ok(output) = std::process::Command::new("free").arg("-h").output() {
-                    eprintln!("[DEBUG] Memory info:\n{}", String::from_utf8_lossy(&output.stdout));
-                }
-            }
-
             Self::apply_extreme_low_memory_optimizations(&mut cmd);
         } else if available_memory < 1200 { // Less than 1.2GB available
             eprintln!("[MEMORY] Low memory detected ({}MB), applying ultra-aggressive optimizations", available_memory);
@@ -292,24 +276,8 @@ impl ProvingEngine {
         // System-level memory constraints
         cmd.process_group(0);
 
-        // Temporarily remove rlimit restrictions to test if they're causing SIGABRT
-        // #[cfg(unix)]
-        // unsafe {
-        //     // Set resource limits that worked on 2GB systems
-        //     cmd.pre_exec(|| {
-        //         // Limit subprocess to 200MB RSS - worked on larger systems
-        //         libc::setrlimit(libc::RLIMIT_RSS, &libc::rlimit {
-        //             rlim_cur: 200 * 1024 * 1024, // 200MB soft limit
-        //             rlim_max: 250 * 1024 * 1024, // 250MB hard limit
-        //         });
-        //         // Also limit virtual memory
-        //         libc::setrlimit(libc::RLIMIT_AS, &libc::rlimit {
-        //             rlim_cur: 300 * 1024 * 1024, // 300MB virtual memory limit
-        //             rlim_max: 350 * 1024 * 1024, // 350MB hard limit
-        //         });
-        //         Ok(())
-        //     });
-        // }
+        // Note: rlimit restrictions removed for sub-1GB systems compatibility
+        // The Stwo prover needs flexible memory limits on low-memory systems with swap
     }
 }
 
