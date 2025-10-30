@@ -275,20 +275,20 @@ impl ProvingEngine {
         // System-level memory constraints
         cmd.process_group(0);
 
-        // Set balanced low memory limits for subprocess
+        // Set generous memory limits for debugging - will tighten once we know actual usage
         #[cfg(unix)]
         unsafe {
-            // Set resource limits for extreme-low memory
+            // Set resource limits for debugging
             cmd.pre_exec(|| {
-                // Limit subprocess to 180MB RSS - more reasonable for proof generation
+                // Limit subprocess to 400MB RSS - should be sufficient for most cases
                 libc::setrlimit(libc::RLIMIT_RSS, &libc::rlimit {
-                    rlim_cur: 180 * 1024 * 1024, // 180MB soft limit
-                    rlim_max: 220 * 1024 * 1024, // 220MB hard limit
+                    rlim_cur: 400 * 1024 * 1024, // 400MB soft limit
+                    rlim_max: 500 * 1024 * 1024, // 500MB hard limit
                 });
                 // Also limit virtual memory
                 libc::setrlimit(libc::RLIMIT_AS, &libc::rlimit {
-                    rlim_cur: 300 * 1024 * 1024, // 300MB virtual memory limit
-                    rlim_max: 350 * 1024 * 1024, // 350MB hard limit
+                    rlim_cur: 600 * 1024 * 1024, // 600MB virtual memory limit
+                    rlim_max: 700 * 1024 * 1024, // 700MB hard limit
                 });
                 Ok(())
             });

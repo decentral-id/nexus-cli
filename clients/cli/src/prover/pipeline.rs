@@ -76,15 +76,15 @@ impl ProvingPipeline {
                             // Each proof runs in its own process and memory is reclaimed when the process exits
                             // Adaptive memory estimation based on available system memory
                             let estimated_memory_per_proof_mb = if total_memory_gb <= 0.95 {
-                                180 // Balanced extreme optimization for sub-1GB systems
+                                380 // Realistic for sub-1GB systems with current limits
                             } else if total_memory_gb <= 1.0 {
-                                200 // Ultra-aggressive for 1GB systems
+                                400 // Ultra-aggressive for 1GB systems
                             } else if total_memory_gb <= 1.5 {
-                                250 // Aggressive for 1.5GB systems
+                                420 // Aggressive for 1.5GB systems
                             } else if total_memory_gb <= 2.0 {
-                                325 // Moderate for 2GB systems
+                                450 // Moderate for 2GB systems
                             } else {
-                                400 // Standard for larger systems
+                                500 // Standard for larger systems
                             };
                             let estimated_peak_memory_mb = memory_mb + estimated_memory_per_proof_mb;
 
