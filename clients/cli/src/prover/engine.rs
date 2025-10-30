@@ -292,24 +292,24 @@ impl ProvingEngine {
         // System-level memory constraints
         cmd.process_group(0);
 
-        // Back to working limits - 2GB system worked fine with much less
-        #[cfg(unix)]
-        unsafe {
-            // Set resource limits that worked on 2GB systems
-            cmd.pre_exec(|| {
-                // Limit subprocess to 200MB RSS - worked on larger systems
-                libc::setrlimit(libc::RLIMIT_RSS, &libc::rlimit {
-                    rlim_cur: 200 * 1024 * 1024, // 200MB soft limit
-                    rlim_max: 250 * 1024 * 1024, // 250MB hard limit
-                });
-                // Also limit virtual memory
-                libc::setrlimit(libc::RLIMIT_AS, &libc::rlimit {
-                    rlim_cur: 300 * 1024 * 1024, // 300MB virtual memory limit
-                    rlim_max: 350 * 1024 * 1024, // 350MB hard limit
-                });
-                Ok(())
-            });
-        }
+        // Temporarily remove rlimit restrictions to test if they're causing SIGABRT
+        // #[cfg(unix)]
+        // unsafe {
+        //     // Set resource limits that worked on 2GB systems
+        //     cmd.pre_exec(|| {
+        //         // Limit subprocess to 200MB RSS - worked on larger systems
+        //         libc::setrlimit(libc::RLIMIT_RSS, &libc::rlimit {
+        //             rlim_cur: 200 * 1024 * 1024, // 200MB soft limit
+        //             rlim_max: 250 * 1024 * 1024, // 250MB hard limit
+        //         });
+        //         // Also limit virtual memory
+        //         libc::setrlimit(libc::RLIMIT_AS, &libc::rlimit {
+        //             rlim_cur: 300 * 1024 * 1024, // 300MB virtual memory limit
+        //             rlim_max: 350 * 1024 * 1024, // 350MB hard limit
+        //         });
+        //         Ok(())
+        //     });
+        // }
     }
 }
 
