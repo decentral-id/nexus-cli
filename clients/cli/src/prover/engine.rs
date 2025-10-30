@@ -126,7 +126,10 @@ impl ProvingEngine {
 
         // Check system memory and apply appropriate optimizations
         let available_memory = get_available_memory_mb();
-        if available_memory < 1200 { // Less than 1.2GB available
+        if available_memory < 950 { // Less than 950MB available (sub-1GB systems)
+            eprintln!("[MEMORY] Critical low memory detected ({}MB), applying extreme optimizations", available_memory);
+            Self::apply_extreme_low_memory_optimizations(&mut cmd);
+        } else if available_memory < 1200 { // Less than 1.2GB available
             eprintln!("[MEMORY] Low memory detected ({}MB), applying ultra-aggressive optimizations", available_memory);
             Self::apply_ultra_low_memory_optimizations(&mut cmd);
         } else {
@@ -252,6 +255,39 @@ impl ProvingEngine {
                 // Limit subprocess to 200MB RSS
                 libc::setrlimit(libc::RLIMIT_RSS, &libc::rlimit {
                     rlim_cur: 200 * 1024 * 1024, // 200MB soft limit
+                    rlim_max: 250 * 1024 * 1024, // 250MB hard limit
+                });
+                Ok(())
+            });
+        }
+    }
+
+    /// Apply extreme optimizations for sub-1GB systems
+    pub fn apply_extreme_low_memory_optimizations(cmd: &mut tokio::process::Command) {
+        // Extreme memory optimization for sub-1GB systems
+        cmd.env("MALLOC_ARENA_MAX", "1"); // Single arena only
+        cmd.env("MALLOC_CONF", "dirty_decay_ms:0,muzzy_decay_ms:0,background_thread:false,lg_dirty_mult:1,lg_muzzy_mult:1,oversize_threshold:1,prof:true,prof_gdump:true,prof_final:true");
+        cmd.env("RUST_MIN_STACK", "131072"); // 128KB stack - minimal possible
+        cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace completely
+        cmd.env("RUST_LOG", "off"); // Disable all logging
+        cmd.env("RUST_NEW_RUNTIME", "1"); // Use experimental runtime with lower overhead
+
+        // System-level memory constraints
+        cmd.process_group(0);
+
+        // Set ultra-low memory limits for subprocess
+        #[cfg(unix)]
+        unsafe {
+            // Set resource limits for extreme-low memory
+            cmd.pre_exec(|| {
+                // Limit subprocess to 120MB RSS
+                libc::setrlimit(libc::RLIMIT_RSS, &libc::rlimit {
+                    rlim_cur: 120 * 1024 * 1024, // 120MB soft limit
+                    rlim_max: 150 * 1024 * 1024, // 150MB hard limit
+                });
+                // Also limit virtual memory
+                libc::setrlimit(libc::RLIMIT_AS, &libc::rlimit {
+                    rlim_cur: 200 * 1024 * 1024, // 200MB virtual memory limit
                     rlim_max: 250 * 1024 * 1024, // 250MB hard limit
                 });
                 Ok(())

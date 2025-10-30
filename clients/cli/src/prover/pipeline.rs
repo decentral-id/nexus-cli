@@ -75,19 +75,21 @@ impl ProvingPipeline {
                             // With true subprocess isolation, we only need to ensure ONE proof can fit at a time
                             // Each proof runs in its own process and memory is reclaimed when the process exits
                             // Adaptive memory estimation based on available system memory
-                            let estimated_memory_per_proof_mb = if total_memory_gb <= 1.0 {
-                                180 // Ultra-aggressive for 1GB systems
+                            let estimated_memory_per_proof_mb = if total_memory_gb <= 0.95 {
+                                120 // Extreme optimization for sub-1GB systems
+                            } else if total_memory_gb <= 1.0 {
+                                150 // Ultra-aggressive for 1GB systems
                             } else if total_memory_gb <= 1.5 {
-                                250 // Aggressive for 1.5GB systems
+                                220 // Aggressive for 1.5GB systems
                             } else if total_memory_gb <= 2.0 {
-                                325 // Moderate for 2GB systems
+                                300 // Moderate for 2GB systems
                             } else {
                                 400 // Standard for larger systems
                             };
                             let estimated_peak_memory_mb = memory_mb + estimated_memory_per_proof_mb;
 
                             // Adaptive memory thresholds based on system size
-                            let memory_threshold_factor = if total_memory_gb <= 1.0 { 0.65 } else if total_memory_gb <= 1.5 { 0.70 } else if total_memory_gb <= 2.0 { 0.75 } else { 0.95 };
+                            let memory_threshold_factor = if total_memory_gb <= 0.95 { 0.55 } else if total_memory_gb <= 1.0 { 0.60 } else if total_memory_gb <= 1.5 { 0.70 } else if total_memory_gb <= 2.0 { 0.75 } else { 0.95 };
                             if estimated_peak_memory_mb > (total_memory_gb * 1024.0 * memory_threshold_factor) as usize {
                                 return Err(ProverError::Stwo(format!(
                                     "Insufficient memory for single proof: estimated {} MB needed, only {} MB available on {} GB system ({}% threshold). Consider using larger instance.",
