@@ -233,18 +233,27 @@ pub async fn setup_session(
     sysinfo_for_check.refresh_memory();
     let total_system_memory_for_check = sysinfo_for_check.total_memory();
 
-    if total_system_memory_for_check < 1500 * 1024 * 1024 { // < 1.5GB
+    if total_system_memory_for_check < 1024 * 1024 * 1024 { // < 1GB
         crate::print_cmd_error!(
             "Hardware Incompatible",
-            "Systems with <1.5GB RAM cannot run zero-knowledge proof generation effectively."
+            "Systems with <1GB RAM cannot run zero-knowledge proof generation."
         );
         crate::print_cmd_info!(
             "Minimum Requirements",
-            "• 1.5GB RAM (minimum for basic operation)\n• 2GB+ RAM (recommended for stable performance)\n• 4GB+ RAM (optimal for high-throughput proving)"
+            "• 1GB RAM (absolute minimum with ultra-aggressive optimizations)\n• 1.5GB+ RAM (recommended for stable performance)\n• 2GB+ RAM (optimal for proving)"
         );
         crate::print_cmd_info!(
             "Recommendation",
-            "Please upgrade to a system with at least 1.5GB RAM to use Nexus Network CLI."
+            "Please upgrade to a system with at least 1GB RAM to use Nexus Network CLI."
+        );
+    } else if total_system_memory_for_check < 1500 * 1024 * 1024 { // 1GB - 1.5GB
+        crate::print_cmd_warn!(
+            "Limited Memory Warning",
+            "System has 1-1.5GB RAM. Ultra-aggressive memory optimizations will be applied.\nPerformance may be limited for large tasks."
+        );
+        crate::print_cmd_info!(
+            "1GB System Recommendations",
+            "• Use --max-threads=1 for best stability\n• Monitor for memory buildup\n• Restart periodically\n• Expect slower performance on large tasks"
         );
     } else if total_system_memory_for_check < 2 * 1024 * 1024 * 1024 { // 1.5GB - 2GB
         crate::print_cmd_warn!(

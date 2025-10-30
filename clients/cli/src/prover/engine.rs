@@ -17,6 +17,9 @@ use std::env;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 
+#[cfg(unix)]
+use std::fs;
+
 /// Core proving engine for ZK proof generation
 pub struct ProvingEngine;
 
@@ -121,8 +124,14 @@ impl ProvingEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Apply maximum performance optimizations for high-throughput parallel processing
-        Self::apply_performance_optimizations(&mut cmd);
+        // Check system memory and apply appropriate optimizations
+        let available_memory = get_available_memory_mb();
+        if available_memory < 1200 { // Less than 1.2GB available
+            eprintln!("[MEMORY] Low memory detected ({}MB), applying ultra-aggressive optimizations", available_memory);
+            Self::apply_ultra_low_memory_optimizations(&mut cmd);
+        } else {
+            Self::apply_performance_optimizations(&mut cmd);
+        }
 
         let mut child = cmd.spawn()?;
 
@@ -210,10 +219,10 @@ impl ProvingEngine {
 
     /// Apply maximum performance optimizations to subprocess for high-throughput parallel processing
     pub fn apply_performance_optimizations(cmd: &mut tokio::process::Command) {
-        // Standard aggressive memory optimizations for normal systems
-        cmd.env("MALLOC_ARENA_MAX", "2"); // Reduce arenas for less fragmentation
-        cmd.env("MALLOC_CONF", "dirty_decay_ms:500,muzzy_decay_ms:500,background_thread:true");
-        cmd.env("RUST_MIN_STACK", "1048576"); // 1MB minimum stack for subprocess threads
+        // Ultra-aggressive memory optimizations for 1GB systems
+        cmd.env("MALLOC_ARENA_MAX", "1"); // Single arena to minimize overhead
+        cmd.env("MALLOC_CONF", "dirty_decay_ms:100,muzzy_decay_ms:100,background_thread:false,lg_dirty_mult:8,lg_muzzy_mult:8");
+        cmd.env("RUST_MIN_STACK", "524288"); // 512KB stack for subprocess threads
 
         // Maximum process spawning optimizations for parallel throughput
         cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace collection for faster startup
@@ -221,5 +230,58 @@ impl ProvingEngine {
 
         // Process group and scheduling optimizations
         cmd.process_group(0); // Create new process group for better management
+    }
+
+    /// Apply ultra-aggressive optimizations for 1GB systems
+    pub fn apply_ultra_low_memory_optimizations(cmd: &mut tokio::process::Command) {
+        // Extreme memory optimization for 1GB systems
+        cmd.env("MALLOC_ARENA_MAX", "1"); // Single arena only
+        cmd.env("MALLOC_CONF", "dirty_decay_ms:0,muzzy_decay_ms:0,background_thread:false,lg_dirty_mult:1,lg_muzzy_mult:1,oversize_threshold:1");
+        cmd.env("RUST_MIN_STACK", "262144"); // 256KB stack - minimal
+        cmd.env("RUST_BACKTRACE", "0"); // Disable backtrace completely
+        cmd.env("RUST_LOG", "off"); // Disable all logging
+
+        // System-level memory constraints
+        cmd.process_group(0);
+
+        // Set very low memory limits for subprocess
+        #[cfg(unix)]
+        unsafe {
+            // Set resource limits for ultra-low memory
+            cmd.pre_exec(|| {
+                // Limit subprocess to 200MB RSS
+                libc::setrlimit(libc::RLIMIT_RSS, &libc::rlimit {
+                    rlim_cur: 200 * 1024 * 1024, // 200MB soft limit
+                    rlim_max: 250 * 1024 * 1024, // 250MB hard limit
+                });
+                Ok(())
+            });
+        }
+    }
+}
+
+/// Get available system memory in MB
+fn get_available_memory_mb() -> usize {
+    #[cfg(unix)]
+    {
+        if let Ok(status) = fs::read_to_string("/proc/meminfo") {
+            for line in status.lines() {
+                if line.starts_with("MemAvailable:") {
+                    if let Some(kb_str) = line.split_whitespace().nth(1) {
+                        if let Ok(kb) = kb_str.parse::<usize>() {
+                            return kb / 1024; // Convert KB to MB
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: assume low memory if we can't detect
+        512
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Non-Unix fallback
+        1024
     }
 }
