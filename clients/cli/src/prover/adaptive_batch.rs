@@ -83,14 +83,27 @@ impl AdaptiveBatcher {
     /// Create a new adaptive batcher with custom bounds
     pub fn with_bounds(min_batch_size: usize, max_batch_size: usize) -> Self {
         let total_memory_gb = crate::system::total_memory_gb();
+        let cores = num_cpus::get();
         
-        // For ultra-low memory, force minimal batching to prevent OOM
+        // Multi-core optimization: enable aggressive batching for systems with adequate resources
         let (adjusted_min, adjusted_max, initial_size) = if total_memory_gb < 1.5 {
             eprintln!("Ultra-low memory detected ({:.1}GB) - disabling batching (batch size = 1)", total_memory_gb);
             (1, 1, 1) // No batching at all for <1.5GB
         } else if total_memory_gb < 2.0 {
             eprintln!("Low memory detected ({:.1}GB) - minimal batching (max batch size = 2)", total_memory_gb);
             (1, 2, 1) // Minimal batching for 1.5-2GB
+        } else if cores >= 4 && total_memory_gb >= 4.0 {
+            // Multi-core optimization: enable aggressive batching
+            let max_batch = (cores * 2).min(max_batch_size);
+            eprintln!("Multi-core system detected ({} cores, {:.1}GB RAM) - enabling parallel batching (max batch = {})",
+                      cores, total_memory_gb, max_batch);
+            (min_batch_size, max_batch, cores)
+        } else if cores >= 2 && total_memory_gb >= 2.0 {
+            // Dual-core optimization
+            let max_batch = (cores * 2).min(max_batch_size);
+            eprintln!("Dual-core system detected ({} cores, {:.1}GB RAM) - moderate batching (max batch = {})",
+                      cores, total_memory_gb, max_batch);
+            (2, max_batch, 2)
         } else {
             (min_batch_size, max_batch_size, std::cmp::max(4, min_batch_size))
         };

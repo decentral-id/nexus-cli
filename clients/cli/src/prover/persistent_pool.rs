@@ -324,17 +324,21 @@ impl PersistentProcessGuard {
 /// Calculate safe pool size based on available system memory
 fn calculate_safe_pool_size() -> usize {
     let total_memory_gb = crate::system::total_memory_gb();
+    let cores = num_cpus::get();
     
+    // Multi-core optimization: scale with CPU cores while respecting memory limits
     if total_memory_gb < 1.5 {
         1 // Only 1 process for <1.5GB systems
     } else if total_memory_gb < 2.0 {
         2
     } else if total_memory_gb < 4.0 {
-        3
+        cores.min(4)  // 2-4GB: scale with cores, max 4
     } else if total_memory_gb < 8.0 {
-        5
+        cores.min(8)  // 4-8GB: scale with cores, max 8
+    } else if total_memory_gb < 16.0 {
+        cores.min(12) // 8-16GB: scale with cores, max 12
     } else {
-        10 // Default for high-memory systems
+        cores.min(16) // 16GB+: scale with cores, max 16
     }
 }
 
@@ -349,17 +353,18 @@ pub static GLOBAL_PROCESS_POOL: std::sync::LazyLock<PersistentProcessPool> = std
 /// Initialize the global process pool
 pub async fn initialize_global_process_pool() -> Result<(), ProverError> {
     let total_memory_gb = crate::system::total_memory_gb();
+    let cores = num_cpus::get();
     
+    // Multi-core optimization: aggressive pre-warming for systems with adequate memory
     let pre_warm_count = if total_memory_gb < 2.0 {
         // No pre-warming for low-memory systems to save RAM
         0
     } else if total_memory_gb < 4.0 {
-        // Minimal pre-warming for medium-low memory
-        1
+        // Modest pre-warming for medium-low memory
+        (cores / 2).max(1).min(2)
     } else {
-        // Normal pre-warming for systems with adequate memory
-        let cores = num_cpus::get();
-        (cores / 2).max(1).min(5)
+        // Aggressive pre-warming for systems with 4GB+ memory
+        cores.min(8)
     };
     
     if pre_warm_count > 0 {

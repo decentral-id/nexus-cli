@@ -1,5 +1,13 @@
 // Copyright (c) 2025 Nexus. All rights reserved.
 
+// Use jemalloc for better multi-threaded performance
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 mod analytics;
 mod cli_messages;
 mod config;
