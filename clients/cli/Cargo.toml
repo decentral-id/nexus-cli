@@ -35,6 +35,16 @@ codegen-units = 256        # Maximum parallel codegen units for faster compilati
 incremental = true         # Enable incremental compilation for faster rebuilds.
 panic = "unwind"           # Use unwind for panics to allow tests to catch them.
 
+[profile.low-memory]
+inherits = "release"
+opt-level = 2              # Reduced optimization (less memory than opt-level=3)
+lto = false                # Disable LTO to save memory during linking
+codegen-units = 16         # More units = less memory per unit (but slower build)
+incremental = true         # Enable incremental compilation to reduce memory on rebuilds
+debug = false              # No debug symbols
+strip = true               # Strip symbols for smaller binary
+panic = 'abort'            # Abort on panic
+
 
 [dependencies]
 async-trait = "0.1.88"
