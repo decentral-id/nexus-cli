@@ -82,14 +82,27 @@ impl AdaptiveBatcher {
 
     /// Create a new adaptive batcher with custom bounds
     pub fn with_bounds(min_batch_size: usize, max_batch_size: usize) -> Self {
+        let total_memory_gb = crate::system::total_memory_gb();
+        
+        // For ultra-low memory, force minimal batching to prevent OOM
+        let (adjusted_min, adjusted_max, initial_size) = if total_memory_gb < 1.5 {
+            eprintln!("Ultra-low memory detected ({:.1}GB) - disabling batching (batch size = 1)", total_memory_gb);
+            (1, 1, 1) // No batching at all for <1.5GB
+        } else if total_memory_gb < 2.0 {
+            eprintln!("Low memory detected ({:.1}GB) - minimal batching (max batch size = 2)", total_memory_gb);
+            (1, 2, 1) // Minimal batching for 1.5-2GB
+        } else {
+            (min_batch_size, max_batch_size, std::cmp::max(4, min_batch_size))
+        };
+        
         let state = BatcherState {
-            current_batch_size: std::cmp::max(4, min_batch_size),
+            current_batch_size: initial_size,
             target_proof_time: Duration::from_millis(2000), // Target 2 seconds per proof
             last_adjustment: Instant::now(),
             consecutive_good_batches: 0,
             consecutive_bad_batches: 0,
-            min_batch_size,
-            max_batch_size,
+            min_batch_size: adjusted_min,
+            max_batch_size: adjusted_max,
         };
 
         Self {
@@ -120,7 +133,9 @@ impl AdaptiveBatcher {
             mem if mem >= 16.0 => 1.2,
             mem if mem >= 8.0 => 1.0,
             mem if mem >= 4.0 => 0.8,
-            _ => 0.6,
+            mem if mem >= 2.0 => 0.6,
+            mem if mem >= 1.5 => 0.4,
+            _ => 0.2, // Ultra-low memory - essentially force batch size = 1
         };
 
         let adjusted_size = (base_batch_size as f64 * memory_multiplier) as usize;

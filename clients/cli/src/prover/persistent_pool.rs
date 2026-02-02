@@ -321,17 +321,54 @@ impl PersistentProcessGuard {
     }
 }
 
+/// Calculate safe pool size based on available system memory
+fn calculate_safe_pool_size() -> usize {
+    let total_memory_gb = crate::system::total_memory_gb();
+    
+    if total_memory_gb < 1.5 {
+        1 // Only 1 process for <1.5GB systems
+    } else if total_memory_gb < 2.0 {
+        2
+    } else if total_memory_gb < 4.0 {
+        3
+    } else if total_memory_gb < 8.0 {
+        5
+    } else {
+        10 // Default for high-memory systems
+    }
+}
+
 /// Global persistent process pool
 pub static GLOBAL_PROCESS_POOL: std::sync::LazyLock<PersistentProcessPool> = std::sync::LazyLock::new(|| {
-    PersistentProcessPool::new(10) // Max 10 processes in global pool
+    let pool_size = calculate_safe_pool_size();
+    eprintln!("Initializing process pool with {} max processes ({}GB RAM detected)",
+              pool_size, crate::system::total_memory_gb());
+    PersistentProcessPool::new(pool_size)
 });
 
 /// Initialize the global process pool
 pub async fn initialize_global_process_pool() -> Result<(), ProverError> {
-    let cores = num_cpus::get();
-    let pre_warm_count = (cores / 2).max(1).min(5); // Pre-warm half the cores, max 5
-
-    GLOBAL_PROCESS_POOL.pre_warm(pre_warm_count).await
+    let total_memory_gb = crate::system::total_memory_gb();
+    
+    let pre_warm_count = if total_memory_gb < 2.0 {
+        // No pre-warming for low-memory systems to save RAM
+        0
+    } else if total_memory_gb < 4.0 {
+        // Minimal pre-warming for medium-low memory
+        1
+    } else {
+        // Normal pre-warming for systems with adequate memory
+        let cores = num_cpus::get();
+        (cores / 2).max(1).min(5)
+    };
+    
+    if pre_warm_count > 0 {
+        eprintln!("Pre-warming {} process(es) in pool...", pre_warm_count);
+        GLOBAL_PROCESS_POOL.pre_warm(pre_warm_count).await
+    } else {
+        eprintln!("Low memory detected ({:.1}GB) - skipping pool pre-warming to conserve RAM", total_memory_gb);
+        Ok(())
+    }
 }
 
 /// Get a process from the global pool

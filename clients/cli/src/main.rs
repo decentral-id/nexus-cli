@@ -8,6 +8,7 @@ mod environment;
 mod events;
 mod keys;
 mod logging;
+mod memory_guard;
 mod network;
 #[path = "proto/nexus.orchestrator.rs"]
 mod nexus_orchestrator;
@@ -312,6 +313,44 @@ async fn start(
     max_difficulty: Option<String>,
     aggressive: bool,
 ) -> Result<(), Box<dyn Error>> {
+    // 0. Memory validation for low-resource systems
+    let total_memory_gb = crate::system::total_memory_gb();
+    
+    // Absolute minimum check
+    if total_memory_gb < 0.8 {
+        eprintln!("ERROR: Insufficient RAM detected ({:.1}GB).", total_memory_gb);
+        eprintln!("This CLI requires at least 1GB RAM to operate safely.");
+        eprintln!("Current system has only {:.1}GB available.", total_memory_gb);
+        std::process::exit(1);
+    }
+    
+    // Warning for marginal systems
+    if total_memory_gb < 1.2 {
+        eprintln!("┌─────────────────────────────────────────────────────");
+        eprintln!("│ WARNING: Low RAM detected ({:.1}GB)", total_memory_gb);
+        eprintln!("├─────────────────────────────────────────────────────");
+        eprintln!("│ This CLI is optimized for systems with ≥4GB RAM.");
+        eprintln!("│ With {:.1}GB, expect:", total_memory_gb);
+        eprintln!("│   • 5-10x slower proof generation");
+        eprintln!("│   • Potential out-of-memory (OOM) kills");
+        eprintln!("│   • Limited parallelization (1 process max)");
+        eprintln!("│");
+        eprintln!("│ STRONGLY RECOMMENDED:");
+        eprintln!("│   • Use --headless flag (TUI uses extra RAM)");
+        eprintln!("│   • Use --max-difficulty SMALL");
+        eprintln!("│   • Monitor with: watch -n 1 free -h");
+        eprintln!("└─────────────────────────────────────────────────────");
+        eprintln!();
+        
+        if !headless {
+            eprintln!("⚠️  WARNING: TUI mode uses significant RAM.");
+            eprintln!("   Consider restarting with --headless for better stability.\n");
+        }
+    } else if total_memory_gb < 2.0 && !headless {
+        eprintln!("Note: {:.1}GB RAM detected. For optimal stability on low-memory systems,", total_memory_gb);
+        eprintln!("      consider using --headless flag.\n");
+    }
+    
     // 1. Version checking (will internally perform country detection without race)
     validate_version_requirements().await?;
 
