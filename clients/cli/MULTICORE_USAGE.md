@@ -74,18 +74,30 @@ export TOKIO_WORKER_THREADS=8
 
 ### 3. Parallel Batching (adaptive_batch.rs)
 
+### 3. Parallel Batch Processing
+
+The CLI now implements true parallel processing for batch inputs:
+
+- Analysis revealed that the original batching was sequential.
+- The new `ProvingPipeline` uses `futures::stream::buffer_unordered` to process inputs concurrently.
+- Each core (up to `--max-threads`) works on a separate proof within the same batch task.
+- Worker processes are reused from the `PersistentProcessPool` to eliminate spawn overhead.
+- **Expected Result**: Linear scaling with core count (e.g., 4 cores = ~4x speedup vs single core).
+
+### 4. Parallel Batching (adaptive_batch.rs)
+
 - 1-core systems: Batch size = 1 (unchanged)
 - 2-core + 2GB: Batch size = 2-4
 - 4-core + 4GB: Batch size = 4-8 (true parallelization)
 - 8-core + 8GB: Batch size = 8-16
 
-### 4. jemalloc Allocator
+### 5. jemalloc Allocator
 
 - Better memory management for multi-threaded workloads
 - Lower fragmentation on long-running processes
 - 5-15% performance improvement
 
-### 5. Multicore Build Profile
+### 6. Multicore Build Profile
 
 - `opt-level = 3` (maximum optimization)
 - `lto = "fat"` (aggressive link-time optimization)

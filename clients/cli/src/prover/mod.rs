@@ -2,6 +2,7 @@ pub mod adaptive_batch;
 pub mod engine;
 pub mod handlers;
 pub mod input;
+pub mod persistent_pool;
 pub mod pipeline;
 pub mod types;
 pub mod verifier;
