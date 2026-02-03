@@ -1,14 +1,14 @@
 //! Persistent process pool for massive subprocess performance improvement
 
+use super::engine::ProvingEngine;
+use super::types::ProverError;
+use nexus_sdk::stwo::seq::Proof;
 use std::collections::VecDeque;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::process::{Child, Command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use super::engine::ProvingEngine;
-use super::types::ProverError;
-use nexus_sdk::stwo::seq::Proof;
+use tokio::process::{Child, Command};
 
 /// A pre-warmed subprocess ready for ultra-fast proof generation
 #[derive(Debug)]
@@ -36,13 +36,15 @@ impl PersistentProverProcess {
 
         let mut child = cmd.spawn()?;
 
-        let stdin = child.stdin.take().ok_or_else(||
-            ProverError::Subprocess("Failed to open stdin".to_string())
-        )?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ProverError::Subprocess("Failed to open stdin".to_string()))?;
 
-        let stdout = child.stdout.take().ok_or_else(||
-            ProverError::Subprocess("Failed to open stdout".to_string())
-        )?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ProverError::Subprocess("Failed to open stdout".to_string()))?;
 
         Ok(Self {
             child,
@@ -76,7 +78,9 @@ impl PersistentProverProcess {
             }
             Some(_) => {
                 // Process completed but we shouldn't get here normally
-                return Err(ProverError::Subprocess("Process ended unexpectedly".to_string()));
+                return Err(ProverError::Subprocess(
+                    "Process ended unexpectedly".to_string(),
+                ));
             }
             None => {
                 // Process is still running (expected)
@@ -87,9 +91,8 @@ impl PersistentProverProcess {
         self.proof_count += 1;
 
         // Zero-copy deserialization
-        postcard::from_bytes(&proof_buffer).map_err(|e|
-            ProverError::Subprocess(format!("Deserialization failed: {}", e))
-        )
+        postcard::from_bytes(&proof_buffer)
+            .map_err(|e| ProverError::Subprocess(format!("Deserialization failed: {}", e)))
     }
 
     /// Check if the process is healthy and should be kept in the pool
@@ -116,6 +119,7 @@ impl PersistentProverProcess {
 
 /// Performance statistics for a persistent process
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ProcessStats {
     pub proof_count: u64,
     pub age_seconds: u64,
@@ -147,6 +151,48 @@ impl PersistentProcessPool {
             max_size,
             stats: Arc::new(Mutex::new(PoolStats::default())),
         }
+    }
+
+    /// Calculate safe pool size based on available system memory and requested workers
+    pub fn calculate_safe_pool_size(requested_workers: usize, aggressive: bool) -> usize {
+        let sys = sysinfo::System::new_all();
+        let total_memory = sys.total_memory();
+        let total_memory_gb = total_memory as f64 / 1024.0 / 1024.0 / 1024.0;
+        let cores = num_cpus::get();
+
+        // Base limits based on memory
+        let memory_limit = if total_memory_gb < 1.5 {
+            1
+        } else if total_memory_gb < 2.0 {
+            2
+        } else if total_memory_gb < 4.0 {
+            if aggressive {
+                cores.min(4)
+            } else {
+                cores.min(2)
+            }
+        } else if total_memory_gb < 8.0 {
+            if aggressive {
+                cores.min(8)
+            } else {
+                cores.min(4)
+            }
+        } else if total_memory_gb < 16.0 {
+            if aggressive {
+                cores.min(12)
+            } else {
+                cores.min(8)
+            }
+        } else {
+            if aggressive {
+                cores.min(16)
+            } else {
+                cores.min(12)
+            }
+        };
+
+        // Respect requested workers but cap at memory limit
+        requested_workers.min(memory_limit).max(1)
     }
 
     /// Get a process from the pool, creating a new one if needed
@@ -213,6 +259,7 @@ impl PersistentProcessPool {
     }
 
     /// Clean up expired processes from the pool
+    #[allow(dead_code)]
     pub async fn cleanup_expired(&self) -> Result<usize, ProverError> {
         let mut expired_count = 0usize;
 
@@ -248,6 +295,7 @@ impl PersistentProcessPool {
     }
 
     /// Get detailed pool information
+    #[allow(dead_code)]
     pub fn get_detailed_stats(&self) -> DetailedPoolStats {
         let processes = self.processes.lock().unwrap();
         let stats = self.stats.lock().unwrap();
@@ -263,6 +311,7 @@ impl PersistentProcessPool {
 
 /// Detailed pool statistics for monitoring
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct DetailedPoolStats {
     pub pool_size: usize,
     pub max_size: usize,
@@ -277,6 +326,32 @@ pub struct PersistentProcessGuard {
     stats: Arc<Mutex<PoolStats>>,
 }
 
+impl std::ops::Deref for PersistentProcessGuard {
+    type Target = PersistentProverProcess;
+
+    fn deref(&self) -> &Self::Target {
+        self.process.as_ref().unwrap()
+    }
+}
+
+impl std::ops::DerefMut for PersistentProcessGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.process.as_mut().unwrap()
+    }
+}
+
+impl PersistentProcessGuard {
+    /// Generate a proof using this persistent process
+    pub async fn prove(&mut self, inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
+        self.process.as_mut().unwrap().prove_direct(inputs).await
+    }
+
+    #[allow(dead_code)]
+    pub fn process(&self) -> &PersistentProverProcess {
+        self.process.as_ref().unwrap()
+    }
+}
+
 impl Drop for PersistentProcessGuard {
     fn drop(&mut self) {
         if let Some(mut process) = self.process.take() {
@@ -285,11 +360,16 @@ impl Drop for PersistentProcessGuard {
 
             if process.is_healthy() {
                 let mut pool = self.pool.lock().unwrap();
-                if pool.len() < 20 { // Don't let pool grow too large
+                if pool.len() < 20 {
+                    // Don't let pool grow too large
                     pool.push_back(process);
 
                     let mut stats = self.stats.lock().unwrap();
                     stats.total_proofs_generated += proof_count;
+                } else {
+                    // If pool is full, kill the process instead of returning it
+                    let _ = process.child.kill();
+                    let _ = process.child.wait(); // Wait for it to terminate
                 }
             } else {
                 // Process is unhealthy, clean it up synchronously
@@ -304,84 +384,84 @@ impl Drop for PersistentProcessGuard {
     }
 }
 
-impl PersistentProcessGuard {
-    /// Get reference to the underlying process
-    pub fn process(&self) -> &PersistentProverProcess {
-        self.process.as_ref().unwrap()
-    }
-
-    /// Get mutable reference to the underlying process
-    pub fn process_mut(&mut self) -> &mut PersistentProverProcess {
-        self.process.as_mut().unwrap()
-    }
-
-    /// Generate a proof using the persistent process
-    pub async fn prove(&mut self, inputs: &(u32, u32, u32)) -> Result<Proof, ProverError> {
-        self.process_mut().prove_direct(inputs).await
-    }
-}
-
-/// Calculate safe pool size based on available system memory
-fn calculate_safe_pool_size() -> usize {
-    let total_memory_gb = crate::system::total_memory_gb();
-    let cores = num_cpus::get();
-    
-    // Multi-core optimization: scale with CPU cores while respecting memory limits
-    if total_memory_gb < 1.5 {
-        1 // Only 1 process for <1.5GB systems
-    } else if total_memory_gb < 2.0 {
-        2
-    } else if total_memory_gb < 4.0 {
-        cores.min(4)  // 2-4GB: scale with cores, max 4
-    } else if total_memory_gb < 8.0 {
-        cores.min(8)  // 4-8GB: scale with cores, max 8
-    } else if total_memory_gb < 16.0 {
-        cores.min(12) // 8-16GB: scale with cores, max 12
-    } else {
-        cores.min(16) // 16GB+: scale with cores, max 16
-    }
-}
+use tokio::sync::RwLock;
 
 /// Global persistent process pool
-pub static GLOBAL_PROCESS_POOL: std::sync::LazyLock<PersistentProcessPool> = std::sync::LazyLock::new(|| {
-    let pool_size = calculate_safe_pool_size();
-    eprintln!("Initializing process pool with {} max processes ({}GB RAM detected)",
-              pool_size, crate::system::total_memory_gb());
-    PersistentProcessPool::new(pool_size)
-});
+pub static GLOBAL_PROCESS_POOL: RwLock<Option<PersistentProcessPool>> = RwLock::const_new(None);
 
 /// Initialize the global process pool
-pub async fn initialize_global_process_pool() -> Result<(), ProverError> {
-    let total_memory_gb = crate::system::total_memory_gb();
+pub async fn initialize_global_process_pool(
+    num_workers: usize,
+    aggressive: bool,
+) -> Result<(), ProverError> {
+    // Calculate appropriate pool size
+    let pool_size = PersistentProcessPool::calculate_safe_pool_size(num_workers, aggressive);
+
+    // Create new pool
+    let pool = PersistentProcessPool::new(pool_size);
+
+    // Pre-warm processes if appropriate
+    let sys = sysinfo::System::new_all();
+    let total_memory = sys.total_memory();
+    let total_memory_gb = total_memory as f64 / 1024.0 / 1024.0 / 1024.0;
     let cores = num_cpus::get();
-    
-    // Multi-core optimization: aggressive pre-warming for systems with adequate memory
-    let pre_warm_count = if total_memory_gb < 2.0 {
-        // No pre-warming for low-memory systems to save RAM
-        0
-    } else if total_memory_gb < 4.0 {
+
+    // Aggressive pre-warming logic
+    let pre_warm_count = if aggressive && total_memory >= 8 * 1024 * 1024 * 1024 {
+        let warm_count = if total_memory >= 16 * 1024 * 1024 * 1024 {
+            (pool_size * 3) / 4 // 75%
+        } else {
+            pool_size / 2 // 50%
+        };
+        // Don't pre-warm more than 8 to avoid massive startup spike
+        warm_count.min(8).max(1)
+    } else if total_memory >= 4 * 1024 * 1024 * 1024 {
         // Modest pre-warming for medium-low memory
         (cores / 2).max(1).min(2)
     } else {
-        // Aggressive pre-warming for systems with 4GB+ memory
-        cores.min(8)
+        // Minimal or no pre-warming for low memory
+        if aggressive { 1 } else { 0 }
     };
-    
+
     if pre_warm_count > 0 {
         eprintln!("Pre-warming {} process(es) in pool...", pre_warm_count);
-        GLOBAL_PROCESS_POOL.pre_warm(pre_warm_count).await
+        pool.pre_warm(pre_warm_count).await?;
     } else {
-        eprintln!("Low memory detected ({:.1}GB) - skipping pool pre-warming to conserve RAM", total_memory_gb);
-        Ok(())
+        eprintln!(
+            "Low memory detected ({:.1}GB) - skipping pool pre-warming to conserve RAM",
+            total_memory_gb
+        );
     }
+
+    let mut guard = GLOBAL_PROCESS_POOL.write().await;
+    *guard = Some(pool);
+
+    Ok(())
 }
 
-/// Get a process from the global pool
+/// Get access to a process from the global pool
 pub async fn get_process() -> Result<PersistentProcessGuard, ProverError> {
-    GLOBAL_PROCESS_POOL.get_process().await
+    // Ensure pool is initialized (lazy initialization if needed)
+    {
+        let guard = GLOBAL_PROCESS_POOL.read().await;
+        if let Some(pool) = guard.as_ref() {
+            return pool.get_process().await;
+        }
+    }
+
+    // Initialize if empty (fallback)
+    let mut guard = GLOBAL_PROCESS_POOL.write().await;
+    if guard.is_none() {
+        // Default conservative initialization if called without explicit init
+        let pool = PersistentProcessPool::new(4);
+        *guard = Some(pool);
+    }
+
+    guard.as_ref().unwrap().get_process().await
 }
 
-/// Get global pool statistics
-pub fn get_global_pool_stats() -> PoolStats {
-    GLOBAL_PROCESS_POOL.get_stats()
+#[allow(dead_code)]
+pub async fn get_global_pool_stats() -> Option<PoolStats> {
+    let guard = GLOBAL_PROCESS_POOL.read().await;
+    guard.as_ref().map(|pool| pool.get_stats())
 }

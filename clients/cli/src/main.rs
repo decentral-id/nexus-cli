@@ -16,7 +16,6 @@ mod environment;
 mod events;
 mod keys;
 mod logging;
-mod memory_guard;
 mod network;
 #[path = "proto/nexus.orchestrator.rs"]
 mod nexus_orchestrator;
@@ -241,7 +240,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // Use manual parsing since main process sends raw binary data, not postcard data
             if stdin_data.len() < 12 {
-                eprintln!("Error: Expected at least 12 bytes, got {}", stdin_data.len());
+                eprintln!(
+                    "Error: Expected at least 12 bytes, got {}",
+                    stdin_data.len()
+                );
                 exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
             }
 
@@ -323,15 +325,21 @@ async fn start(
 ) -> Result<(), Box<dyn Error>> {
     // 0. Memory validation for low-resource systems
     let total_memory_gb = crate::system::total_memory_gb();
-    
+
     // Absolute minimum check
     if total_memory_gb < 0.8 {
-        eprintln!("ERROR: Insufficient RAM detected ({:.1}GB).", total_memory_gb);
+        eprintln!(
+            "ERROR: Insufficient RAM detected ({:.1}GB).",
+            total_memory_gb
+        );
         eprintln!("This CLI requires at least 1GB RAM to operate safely.");
-        eprintln!("Current system has only {:.1}GB available.", total_memory_gb);
+        eprintln!(
+            "Current system has only {:.1}GB available.",
+            total_memory_gb
+        );
         std::process::exit(1);
     }
-    
+
     // Warning for marginal systems
     if total_memory_gb < 1.2 {
         eprintln!("┌─────────────────────────────────────────────────────");
@@ -349,16 +357,19 @@ async fn start(
         eprintln!("│   • Monitor with: watch -n 1 free -h");
         eprintln!("└─────────────────────────────────────────────────────");
         eprintln!();
-        
+
         if !headless {
             eprintln!("⚠️  WARNING: TUI mode uses significant RAM.");
             eprintln!("   Consider restarting with --headless for better stability.\n");
         }
     } else if total_memory_gb < 2.0 && !headless {
-        eprintln!("Note: {:.1}GB RAM detected. For optimal stability on low-memory systems,", total_memory_gb);
+        eprintln!(
+            "Note: {:.1}GB RAM detected. For optimal stability on low-memory systems,",
+            total_memory_gb
+        );
         eprintln!("      consider using --headless flag.\n");
     }
-    
+
     // 1. Version checking (will internally perform country detection without race)
     validate_version_requirements().await?;
 

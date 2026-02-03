@@ -170,7 +170,7 @@ impl ProvingPipeline {
         _client_id: &str,
         num_workers: usize,
     ) -> Result<(Vec<Proof>, String, Vec<String>), ProverError> {
-        use crate::prover::persistent_pool::GLOBAL_PROCESS_POOL;
+        use crate::prover::persistent_pool;
         use futures::stream::{self, StreamExt};
 
         let all_inputs = task.all_inputs();
@@ -198,7 +198,7 @@ impl ProvingPipeline {
                         // input_data is Vec<u8> (owned), so reference it here
                         let inputs = InputParser::parse_triple_input(&input_data)?;
 
-                        let mut process = GLOBAL_PROCESS_POOL.get_process().await?;
+                        let mut process = persistent_pool::get_process().await?;
                         let proof = process.prove(&inputs).await?;
 
                         let proof_hash = Self::generate_proof_hash(&proof);

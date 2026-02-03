@@ -53,25 +53,34 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
 
     // Calculate maximum subprocesses based on aggressive parallelization strategy
     let multiplier = if aggressive {
-        if total_system_memory >= 16 * 1024 * 1024 * 1024 { // 16GB+
+        if total_system_memory >= 16 * 1024 * 1024 * 1024 {
+            // 16GB+
             8 // High-end systems: 8x cores
-        } else if total_system_memory >= 8 * 1024 * 1024 * 1024 { // 8GB+
+        } else if total_system_memory >= 8 * 1024 * 1024 * 1024 {
+            // 8GB+
             6 // Mid-high systems: 6x cores
-        } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
+        } else if total_system_memory >= 4 * 1024 * 1024 * 1024 {
+            // 4GB+
             4 // Mid-range systems: 4x cores
-        } else if total_system_memory >= 2 * 1024 * 1024 * 1024 { // 2GB+
+        } else if total_system_memory >= 2 * 1024 * 1024 * 1024 {
+            // 2GB+
             2 // Low-end systems: 2x cores
-        } else { // < 2GB - insufficient for operation
+        } else {
+            // < 2GB - insufficient for operation
             1 // Minimal, but will likely fail
         }
     } else {
-        if total_system_memory >= 8 * 1024 * 1024 * 1024 { // 8GB+
+        if total_system_memory >= 8 * 1024 * 1024 * 1024 {
+            // 8GB+
             4 // Standard mode: conservative
-        } else if total_system_memory >= 4 * 1024 * 1024 * 1024 { // 4GB+
+        } else if total_system_memory >= 4 * 1024 * 1024 * 1024 {
+            // 4GB+
             3 // Standard mode: moderate
-        } else if total_system_memory >= 2 * 1024 * 1024 * 1024 { // 2GB+
+        } else if total_system_memory >= 2 * 1024 * 1024 * 1024 {
+            // 2GB+
             2 // Standard mode: minimal for 2GB systems
-        } else { // < 2GB - insufficient for operation
+        } else {
+            // < 2GB - insufficient for operation
             1 // Minimal, but will likely fail
         }
     };
@@ -93,7 +102,8 @@ fn clamp_threads_by_memory(requested_threads: usize, aggressive: bool) -> usize 
         requested_threads // Allow requested threads if memory permits subprocess strategy
     } else {
         // Fall back to memory-per-thread calculation if insufficient memory
-        let memory_per_thread = if total_system_memory <= 2 * 1024 * 1024 * 1024 { // <= 2GB systems
+        let memory_per_thread = if total_system_memory <= 2 * 1024 * 1024 * 1024 {
+            // <= 2GB systems
             512 * 1024 * 1024 // 512MB per thread for low-memory systems
         } else {
             crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT // 2GB for normal systems
@@ -151,7 +161,7 @@ pub async fn setup_session(
     let orchestrator_client = OrchestratorClient::new(env.clone());
 
     let total_cores = crate::system::num_cores();
-    
+
     // Calculate optimal worker count based on optimization mode
     let (max_workers, default_workers) = if aggressive {
         // Aggressive mode: Use 95% of cores for maximum performance
@@ -162,8 +172,10 @@ pub async fn setup_session(
         let max = ((total_cores as f64 * 0.9).ceil() as usize).max(1);
         (max, max)
     };
-    
-    let mut num_workers: usize = max_threads.unwrap_or(default_workers as u32).clamp(1, max_workers as u32) as usize;
+
+    let mut num_workers: usize = max_threads
+        .unwrap_or(default_workers as u32)
+        .clamp(1, max_workers as u32) as usize;
 
     // Check memory and clamp threads if max-threads was explicitly set OR check-memory flag is set OR aggressive mode
     if max_threads.is_some() || check_mem || aggressive {
@@ -171,9 +183,9 @@ pub async fn setup_session(
         let mut sysinfo = System::new();
         sysinfo.refresh_memory();
         let total_system_memory = sysinfo.total_memory();
-        
+
         let memory_clamped_workers = clamp_threads_by_memory(num_workers, aggressive);
-        
+
         // Debug output for memory calculation
         if aggressive || check_mem {
             let total_gb = total_system_memory as f64 / 1024.0 / 1024.0 / 1024.0;
@@ -181,16 +193,27 @@ pub async fn setup_session(
             let available_gb = total_gb * available_ratio;
             let total_cores = crate::system::num_cores();
             let multiplier = if aggressive {
-                if total_system_memory >= 16 * 1024 * 1024 * 1024 { 8 }
-                else if total_system_memory >= 8 * 1024 * 1024 * 1024 { 6 }
-                else if total_system_memory >= 4 * 1024 * 1024 * 1024 { 4 }
-                else if total_system_memory >= 2 * 1024 * 1024 * 1024 { 2 }
-                else { 1 }
+                if total_system_memory >= 16 * 1024 * 1024 * 1024 {
+                    8
+                } else if total_system_memory >= 8 * 1024 * 1024 * 1024 {
+                    6
+                } else if total_system_memory >= 4 * 1024 * 1024 * 1024 {
+                    4
+                } else if total_system_memory >= 2 * 1024 * 1024 * 1024 {
+                    2
+                } else {
+                    1
+                }
             } else {
-                if total_system_memory >= 8 * 1024 * 1024 * 1024 { 4 }
-                else if total_system_memory >= 4 * 1024 * 1024 * 1024 { 3 }
-                else if total_system_memory >= 2 * 1024 * 1024 * 1024 { 2 }
-                else { 1 }
+                if total_system_memory >= 8 * 1024 * 1024 * 1024 {
+                    4
+                } else if total_system_memory >= 4 * 1024 * 1024 * 1024 {
+                    3
+                } else if total_system_memory >= 2 * 1024 * 1024 * 1024 {
+                    2
+                } else {
+                    1
+                }
             };
 
             let subprocess_memory_mb = if aggressive { 60 } else { 40 };
@@ -233,7 +256,8 @@ pub async fn setup_session(
     sysinfo_for_check.refresh_memory();
     let total_system_memory_for_check = sysinfo_for_check.total_memory();
 
-    if total_system_memory_for_check < 850 * 1024 * 1024 { // < 850MB
+    if total_system_memory_for_check < 850 * 1024 * 1024 {
+        // < 850MB
         crate::print_cmd_error!(
             "Hardware Incompatible",
             "Systems with <850MB RAM cannot run zero-knowledge proof generation effectively."
@@ -246,7 +270,8 @@ pub async fn setup_session(
             "Recommendation",
             "Please upgrade to a system with at least 1GB RAM for stable performance."
         );
-    } else if total_system_memory_for_check < 1024 * 1024 * 1024 { // 850MB - 1GB
+    } else if total_system_memory_for_check < 1024 * 1024 * 1024 {
+        // 850MB - 1GB
         crate::print_cmd_warn!(
             "Critical Memory Warning",
             "System has 850MB-1GB RAM. Extreme memory optimizations will be applied.\nPerformance will be significantly limited."
@@ -255,7 +280,8 @@ pub async fn setup_session(
             "Sub-1GB System Recommendations",
             "• Use --max-threads=1 (mandatory)\n• Expect slow proof generation\n• Restart frequently\n• Only small tasks will succeed"
         );
-    } else if total_system_memory_for_check < 1500 * 1024 * 1024 { // 1GB - 1.5GB
+    } else if total_system_memory_for_check < 1500 * 1024 * 1024 {
+        // 1GB - 1.5GB
         crate::print_cmd_warn!(
             "Limited Memory Warning",
             "System has 1-1.5GB RAM. Ultra-aggressive memory optimizations will be applied.\nPerformance may be limited for large tasks."
@@ -264,7 +290,8 @@ pub async fn setup_session(
             "1GB System Recommendations",
             "• Use --max-threads=1 for best stability\n• Monitor for memory buildup\n• Restart periodically\n• Expect slower performance on large tasks"
         );
-    } else if total_system_memory_for_check < 2 * 1024 * 1024 * 1024 { // 1.5GB - 2GB
+    } else if total_system_memory_for_check < 2 * 1024 * 1024 * 1024 {
+        // 1.5GB - 2GB
         crate::print_cmd_warn!(
             "Limited Memory Warning",
             "System has limited RAM. For best stability, use single-threaded mode and monitor memory usage."
@@ -285,6 +312,15 @@ pub async fn setup_session(
 
     // Set wallet for reporting
     set_wallet_address_for_reporting(config.wallet_address.clone());
+
+    // Initialize global process pool with aggressive pre-warming if enabled
+    if let Err(e) =
+        crate::prover::persistent_pool::initialize_global_process_pool(num_workers, aggressive)
+            .await
+    {
+        eprintln!("Warning: Failed to initialize process pool: {}", e);
+        // Continue anyway, pool can be lazily initialized
+    }
 
     // Start authenticated worker (only mode we support now)
     let (event_receiver, join_handles, max_tasks_shutdown_sender) = start_authenticated_worker(
