@@ -64,27 +64,45 @@ impl PersistentProverProcess {
         buffer[4..8].copy_from_slice(&inputs.1.to_le_bytes());
         buffer[8..12].copy_from_slice(&inputs.2.to_le_bytes());
 
-        self.stdin.write_all(&buffer).await?;
-        self.stdin.flush().await?;
+        // Write Frame: [12 bytes input]
+        if let Err(e) = self.stdin.write_all(&buffer).await {
+            return Err(ProverError::Subprocess(format!(
+                "Failed to write inputs: {}",
+                e
+            )));
+        }
+        if let Err(e) = self.stdin.flush().await {
+            return Err(ProverError::Subprocess(format!(
+                "Failed to flush inputs: {}",
+                e
+            )));
+        }
 
-        // Read proof directly
-        let mut proof_buffer = Vec::new();
-        self.stdout.read_to_end(&mut proof_buffer).await?;
+        // Read Frame: [Length u32][Proof Bytes]
 
-        // Check process health
-        match self.child.try_wait()? {
-            Some(status) if !status.success() => {
-                return Err(ProverError::Subprocess(format!("Process died: {}", status)));
-            }
-            Some(_) => {
-                // Process completed but we shouldn't get here normally
+        // 1. Read Length
+        let mut len_buffer = [0u8; 4];
+        if let Err(e) = self.stdout.read_exact(&mut len_buffer).await {
+            // If unexpected EOF, process likely died
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
                 return Err(ProverError::Subprocess(
-                    "Process ended unexpectedly".to_string(),
+                    "Process exited unexpectedly (EOF reading length)".to_string(),
                 ));
             }
-            None => {
-                // Process is still running (expected)
-            }
+            return Err(ProverError::Subprocess(format!(
+                "Failed to read proof length: {}",
+                e
+            )));
+        }
+        let proof_len = u32::from_le_bytes(len_buffer) as usize;
+
+        // 2. Read Proof Data
+        let mut proof_buffer = vec![0u8; proof_len];
+        if let Err(e) = self.stdout.read_exact(&mut proof_buffer).await {
+            return Err(ProverError::Subprocess(format!(
+                "Failed to read proof data (expected {} bytes): {}",
+                proof_len, e
+            )));
         }
 
         self.last_used = Instant::now();

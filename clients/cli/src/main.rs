@@ -224,76 +224,85 @@ async fn main() -> Result<(), Box<dyn Error>> {
             register_node(node_id, &config_path, orchestrator).await
         }
         Command::ProveFibSubprocess => {
-            // Read binary inputs from stdin
-            let mut stdin_data = Vec::new();
-            match std::io::stdin().read_to_end(&mut stdin_data) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                    // Broken pipe during stdin read - likely shutdown, exit silently
-                    exit(0);
-                }
-                Err(e) => {
-                    eprintln!("Failed to read from stdin: {}", e);
+            // Process inputs in a loop for persistent mode
+            let mut stdin = std::io::stdin().lock();
+            let mut stdout = std::io::stdout().lock();
+
+            loop {
+                // 1. Read 12 bytes (4 bytes * 3 inputs)
+                let mut input_buffer = [0u8; 12];
+                if let Err(e) = stdin.read_exact(&mut input_buffer) {
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                        // EOF reached (parent closed pipe) -> Clean exit
+                        break;
+                    }
+                    // Real error
+                    eprintln!("Failed to read input from stdin: {}", e);
                     exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
                 }
-            }
 
-            // Use manual parsing since main process sends raw binary data, not postcard data
-            if stdin_data.len() < 12 {
-                eprintln!(
-                    "Error: Expected at least 12 bytes, got {}",
-                    stdin_data.len()
-                );
-                exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
-            }
+                // 2. Parse inputs
+                let mut bytes = [0u8; 4];
 
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&stdin_data[0..4]);
-            let input1 = u32::from_le_bytes(bytes);
+                bytes.copy_from_slice(&input_buffer[0..4]);
+                let input1 = u32::from_le_bytes(bytes);
 
-            bytes.copy_from_slice(&stdin_data[4..8]);
-            let input2 = u32::from_le_bytes(bytes);
+                bytes.copy_from_slice(&input_buffer[4..8]);
+                let input2 = u32::from_le_bytes(bytes);
 
-            bytes.copy_from_slice(&stdin_data[8..12]);
-            let input3 = u32::from_le_bytes(bytes);
+                bytes.copy_from_slice(&input_buffer[8..12]);
+                let input3 = u32::from_le_bytes(bytes);
 
-            let inputs = (input1, input2, input3);
-            match ProvingEngine::prove_fib_subprocess(&inputs) {
-                Ok(proof) => {
-                    let bytes = to_allocvec(&proof)?;
+                let inputs = (input1, input2, input3);
 
-                    // Ensure atomic write to stdout with ONLY binary data
-                    let mut out = std::io::stdout().lock();
-                    match out.write_all(&bytes) {
-                        Ok(_) => {
-                            // Ensure data is flushed before returning
-                            match out.flush() {
-                                Ok(_) => Ok(()),
-                                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                                    // Broken pipe during flush - likely shutdown, exit silently
-                                    exit(0);
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to flush stdout: {}", e);
-                                    exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
-                                }
+                // 3. Generate Proof
+                match ProvingEngine::prove_fib_subprocess(&inputs) {
+                    Ok(proof) => {
+                        let proof_bytes = match to_allocvec(&proof) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                eprintln!("Serialization failed: {}", e);
+                                exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
                             }
+                        };
+
+                        // 4. Send Output: [Length u32][Proof Bytes]
+                        let len_bytes = (proof_bytes.len() as u32).to_le_bytes();
+
+                        // Write Length
+                        if let Err(e) = stdout.write_all(&len_bytes) {
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                break;
+                            }
+                            eprintln!("Failed to write length: {}", e);
+                            exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                            // Broken pipe during stdout write - likely shutdown, exit silently
-                            exit(0);
+
+                        // Write Data
+                        if let Err(e) = stdout.write_all(&proof_bytes) {
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                break;
+                            }
+                            eprintln!("Failed to write proof data: {}", e);
+                            exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
                         }
-                        Err(e) => {
-                            eprintln!("Failed to write proof to stdout: {}", e);
+
+                        // Flush
+                        if let Err(e) = stdout.flush() {
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                break;
+                            }
+                            eprintln!("Failed to flush stdout: {}", e);
                             exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!("Error generating proof: {}", e);
-                    exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
+                    Err(e) => {
+                        eprintln!("Error generating proof: {}", e);
+                        exit(consts::cli_consts::SUBPROCESS_INTERNAL_ERROR_CODE);
+                    }
                 }
             }
+            Ok(())
         }
     }
 }
